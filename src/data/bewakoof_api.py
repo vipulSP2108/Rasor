@@ -1,155 +1,128 @@
-"""Live Bewakoof.com Authenticated API Catalog Provider with multi-attribute styling and fandom routing."""
+"""Live Bewakoof.com Authenticated API Catalog Provider.
+
+Uses:
+- HandleRegistry (schema_mapper.py) to resolve the most specific collection handle.
+- UniversalProductMapper (schema_mapper.py) for store-agnostic JSON -> Product conversion.
+- Character-level post-filter for specific character queries (Iron Man within Marvel, etc.)
+- Subclass post-filter to prevent category bleed (t-shirts only returns T-Shirts).
+"""
 
 import os
-import json
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import requests
+
 from src.agent.state import Product
 from src.data.base import BaseCatalogProvider
-from src.data.dev_catalog import DevCatalogProvider
+from src.data.schema_mapper import (
+    BEWAKOOF_FIELD_MAP,
+    UniversalProductMapper,
+    resolve_handle,
+)
 
 _DEFAULT_TOKEN = os.getenv("BEWAKOOF_CLIENT_DEVICE_TOKEN") or os.getenv("BEWAKOOF_API_TOKEN", "")
-_IMAGE_BASE_URL = "https://images.bewakoof.com/t640/"
 
-_KNOWN_COLORS = [
-    "black", "blue", "white", "red", "green", "grey", "gray", "yellow", 
-    "orange", "maroon", "beige", "brown", "purple", "pink", "navy", "olive", "lavender"
-]
+# Specific characters within a fandom — used for post-filter (only when explicitly named)
+_CHARACTER_KEYWORDS: Dict[str, List[str]] = {
+    # Marvel characters
+    "iron man":         ["iron man", "tony stark", "ironman"],
+    "spider man":       ["spider man", "spiderman", "spider-man", "spidey", "peter parker"],
+    "captain america":  ["captain america", "steve rogers", "cap"],
+    "thor":             ["thor", "asgard"],
+    "deadpool":         ["deadpool", "wade wilson", "dead pool"],
+    "hulk":             ["hulk", "bruce banner"],
+    "black panther":    ["black panther", "wakanda", "t'challa"],
+    "wolverine":        ["wolverine", "logan"],
+    # DC characters
+    "batman":           ["batman", "dark knight", "bruce wayne", "gotham"],
+    "superman":         ["superman", "clark kent", "man of steel"],
+    "joker":            ["joker"],
+    "flash":            ["flash", "barry allen"],
+    # Disney characters
+    "mickey mouse":     ["mickey", "mickey mouse"],
+    "minnie mouse":     ["minnie"],
+    "donald duck":      ["donald duck"],
+    # Anime characters
+    "naruto":           ["naruto", "uzumaki", "hokage"],
+    # Friends characters
+    "chandler":         ["chandler", "bing"],
+    "ross":             ["ross"],
+    # General wildcards
+    "harry potter":     ["harry potter", "harry", "potter", "hogwarts"],
+    "garfield":         ["garfield"],
+    "tom jerry":        ["tom and jerry", "tom & jerry", "tom jerry"],
+}
+
+def _detect_specific_character(prompt_lower: str) -> Optional[str]:
+    """Returns the specific character keyword to filter by, or None if just fandom-level."""
+    for char_name, keywords in _CHARACTER_KEYWORDS.items():
+        if any(kw in prompt_lower for kw in keywords):
+            return char_name
+    return None
 
 
 class BewakoofCatalogProvider(BaseCatalogProvider):
-    """Direct live API integration with Bewakoof.com with design, fandom, bundle offer, and fit routing."""
+    """Live API integration with Bewakoof.com using Handle Registry & Universal Schema Mapper."""
 
     def __init__(
         self,
         api_token: Optional[str] = None,
         client_device_token: Optional[str] = None,
-        fallback_provider: Optional[BaseCatalogProvider] = None
+        fallback_provider: Optional[BaseCatalogProvider] = None,
     ):
         self.api_token = api_token or os.getenv("BEWAKOOF_API_TOKEN", _DEFAULT_TOKEN)
         self.client_device_token = client_device_token or os.getenv("BEWAKOOF_CLIENT_DEVICE_TOKEN", self.api_token)
-        self.fallback = fallback_provider or DevCatalogProvider()
+        self.mapper = UniversalProductMapper(field_map=BEWAKOOF_FIELD_MAP)
         self.last_status_message: str = "Initialized"
         self.last_used_source: str = "bewakoof_live_api"
 
-    def _get_headers(self) -> Dict[str, str]:
+        # Lazy import fallback to avoid circular imports
+        self._fallback_provider = fallback_provider
+
+    @property
+    def fallback(self) -> BaseCatalogProvider:
+        if self._fallback_provider is None:
+            from src.data.dev_catalog import DevCatalogProvider
+            self._fallback_provider = DevCatalogProvider()
+        return self._fallback_provider
+
+    def _headers(self) -> Dict[str, str]:
         return {
             "accept": "application/json, text/plain, */*",
             "api-token": self.api_token,
             "client-device-token": self.client_device_token,
             "x-client-device-token": self.client_device_token,
             "ab-id": "100",
-            "x-ab-id": "100",
             "preferred-location": "IN",
             "referer": "https://www.bewakoof.com/",
             "origin": "https://www.bewakoof.com",
-            "sec-ch-ua-platform": '"Android"',
-            "sec-ch-ua-mobile": "?1",
             "user-agent": (
                 "Mozilla/5.0 (Linux; Android 15; Pixel 9) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/151.0.0.0 Mobile Safari/537.36"
-            )
+            ),
         }
 
-    def _map_to_product(self, raw: Dict[str, Any], query_terms: List[str]) -> Optional[Product]:
-        """Maps a Bewakoof raw JSON item to our unified Pydantic Product model with rich overlays."""
-        try:
-            prod_id = str(raw.get("id") or raw.get("legacy_id", "BWKF-UNKNOWN"))
-            title = raw.get("name") or raw.get("custom_name", "Bewakoof Item")
-            price = float(raw.get("price") or raw.get("sp") or 0.0)
-            mrp = float(raw.get("mrp") or price)
-            member_price = raw.get("member_price")
-
-            # Attributes & Overlays
-            attrs = raw.get("product_attributes", {})
-            gender_val = str(raw.get("gender") or "Unisex").title()
-            color_val = str(raw.get("color_name") or attrs.get("color") or "Multi").title()
-            design_val = str(attrs.get("design") or ("Graphic Print" if "graphic" in title.lower() or "print" in title.lower() else "Solid")).title()
-            fit_val = str(raw.get("fit") or attrs.get("fit") or "Regular Fit")
-            fabric_val = str(raw.get("fabric") or attrs.get("fabric") or "Cotton")
-            neck_val = str(raw.get("neck") or attrs.get("neck") or "Round Neck")
-            sleeve_val = str(raw.get("sleeve") or attrs.get("sleeve") or "Half Sleeve")
-            partner_val = attrs.get("merchandise_partner") or raw.get("cat_designer") or None
-            bundle_offers = raw.get("offer_tags", [])
-
-            # Ratings
-            rating_val = float(raw.get("ratings_avg") or raw.get("average_rating") or (raw.get("ratings", {}).get("avg") if isinstance(raw.get("ratings"), dict) else 4.5))
-            rating_count = int(raw.get("ratings_count") or (raw.get("ratings", {}).get("count") if isinstance(raw.get("ratings"), dict) else 50))
-
-            # Stock & sizes
-            in_stock = bool(raw.get("in_stock", 1)) and bool(raw.get("stock_status", True))
-            available_sizes = [s.get("name") for s in raw.get("product_sizes", []) if s.get("stock_status", True)]
-
-            # Images & URL
-            display_img = raw.get("display_image") or (raw.get("images", [None])[0] if raw.get("images") else None)
-            full_img_url = f"{_IMAGE_BASE_URL}{display_img}" if display_img else None
-            slug = raw.get("url", "")
-            product_url = f"https://www.bewakoof.com/p/{slug}" if slug else "https://www.bewakoof.com/"
-
-            # Specifications Dictionary
-            specs = {
-                "gender": gender_val,
-                "color": color_val,
-                "design": design_val,
-                "fit": fit_val,
-                "fabric": fabric_val,
-                "neck": neck_val,
-                "sleeve": sleeve_val,
-                "fandom_partner": partner_val,
-                "bundle_offers": bundle_offers,
-                "mrp_inr": mrp,
-                "member_price_inr": member_price,
-                "available_sizes": available_sizes,
-                "discount_offer": raw.get("offer") or raw.get("product_discount"),
-                "image_url": full_img_url
-            }
-
-            # Tags
-            tags = [t.lower() for t in query_terms] + [
-                "bewakoof",
-                gender_val.lower(),
-                color_val.lower(),
-                design_val.lower(),
-                fit_val.lower(),
-                str(partner_val).lower() if partner_val else "",
-                str(raw.get("category_info", {}).get("subclass") or "clothing").lower() if isinstance(raw.get("category_info"), dict) else "clothing",
-            ]
-
-            # Dynamic descriptive headline
-            desc_parts = [gender_val, color_val, fit_val, design_val]
-            if partner_val:
-                desc_parts.append(f"({partner_val})")
-            desc_parts.append(title)
-            if bundle_offers:
-                desc_parts.append(f"| Bundle: {', '.join(bundle_offers)}")
-            
-            description_str = " ".join(desc_parts)
-
-            return Product(
-                id=f"BWKF-{prod_id}",
-                title=title,
-                brand="Bewakoof®",
-                merchant="Bewakoof",
-                price=price,
-                currency="INR",
-                rating=rating_val,
-                review_count=rating_count,
-                in_stock=in_stock,
-                stock_quantity=20 if in_stock else 0,
-                category=raw.get("parent_category") or raw.get("type") or "Apparel",
-                description=description_str,
-                tags=[t for t in set(tags) if t],
-                shipping_days=3,
-                shipping_cost=0.0 if price > 499 else 50.0,
-                source_url=product_url,
-                specs=specs,
-                discount_codes=["TRIBE10", "WELCOME100"] if member_price else []
-            )
-        except Exception as e:
-            print(f"[Bewakoof Mapper] Error mapping item: {e}")
-            return None
+    def _fetch_collection(self, handle: str, fetch_limit: int = 60) -> List[Dict[str, Any]]:
+        """Fetches raw products from a single collection handle."""
+        product_fields = (
+            "id,name,url,mrp,price,display_image,in_stock,status,"
+            "gender,color_name,product_attributes,product_sizes,"
+            "cat_designer,offer_tags,subclass,category_info,member_price,ratings_avg,ratings_count"
+        )
+        url = (
+            f"{os.getenv('BEWAKOOF_API_BASE_URL', '')}{os.getenv('BEWAKOOF_COLLECTION_ENDPOINT', '')}/{handle}"
+            f"?qf=true&sort=popular&page=1&limit={fetch_limit}&fields=results"
+            f"&product_fields={product_fields}"
+        )
+        resp = requests.get(url, headers=self._headers(), timeout=8)
+        if resp.status_code == 200:
+            return resp.json().get("products", [])
+        if resp.status_code == 404:
+            print(f"[Bewakoof] Handle '{handle}' → 404. Will use fallback.")
+        else:
+            print(f"[Bewakoof] Handle '{handle}' → HTTP {resp.status_code}")
+        return []
 
     def search_products(
         self,
@@ -162,155 +135,192 @@ class BewakoofCatalogProvider(BaseCatalogProvider):
         fandom: Optional[str] = None,
         fit: Optional[str] = None,
         sleeve: Optional[str] = None,
+        fabric: Optional[str] = None,
+        neck: Optional[str] = None,
         max_price: Optional[float] = None,
         min_rating: Optional[float] = None,
         merchant: Optional[str] = None,
-        limit: int = 6
+        limit: int = 6,
     ) -> List[Product]:
-        """Queries the live Bewakoof collections with multi-attribute filtering."""
-        q_lower = query.lower()
-        
-        # 1. Resolve Target Gender
-        target_gender = gender.lower() if gender else ("women" if "women" in q_lower else "men")
 
-        # 2. Resolve Target Color
-        target_color = color.lower() if color else None
-        if not target_color:
-            for c in _KNOWN_COLORS:
-                if re.search(rf"\b{c}\b", q_lower):
-                    target_color = c
-                    break
+        g = (gender or "men").lower()
+        prompt_lower = (query or "").lower()
 
-        # 3. Resolve Collection Handle
-        cat_lower = (category or query).lower()
-        if "jogger" in cat_lower or "trackpant" in cat_lower:
-            handle = f"{target_gender}-joggers"
-        elif "hoodie" in cat_lower or "jacket" in cat_lower or "sweatshirt" in cat_lower:
-            handle = f"{target_gender}-hoodies-sweatshirts"
-        elif "jeans" in cat_lower or "denim" in cat_lower:
-            handle = f"{target_gender}-jeans"
-        else:
-            handle = f"{target_gender}-clothing"
-
-        url = (
-            f"{os.getenv('BEWAKOOF_API_BASE_URL', '')}{os.getenv('BEWAKOOF_COLLECTION_ENDPOINT', '')}/{handle}"
-            f"?qf=true&sort=popular&page=1&limit={max(limit*5, 50)}&fields=results"
-            f"&product_fields=id,name,url,mrp,price,flip_image,display_image,in_stock,status,product_type,color_name,category_info,offer,gender,ratings_avg,ratings_count,member_price,fit,fabric,product_sizes,product_attributes,cat_designer,offer_tags"
+        # ── Step 1: Resolve most specific collection handle ──────────────────
+        handle, needs_subclass_filter = resolve_handle(
+            gender=g,
+            category=category,
+            sleeve=sleeve,
+            fandom=fandom,
+            design=design,
+            fit=fit,
         )
+        print(f"📡 [Bewakoof] handle='{handle}' | gender={g} | category={category} | sleeve={sleeve} | fandom={fandom} | design={design} | color={color}")
 
+        # ── Step 2: Fetch from Bewakoof API ───────────────────────────────────
+        # NOTE: Bewakoof returns HTTP 400 when limit > the collection's total item count.
+        # Most themed/specific collections (men-t-shirts, marvel, batman-merchandise) have ~25-48 items.
+        # Hard cap at 48 to stay within safe range for all collection sizes.
+        safe_fetch_limit = min(max(limit * 4, 24), 48)
         try:
-            print(f"📡 [Bewakoof Live API] handle='{handle}', gender='{target_gender}', color='{target_color}', design='{design}', fandom='{fandom}'...")
-            resp = requests.get(url, headers=self._get_headers(), timeout=8)
-
-            if resp.status_code != 200:
-                self.last_status_message = f"⚠️ Bewakoof API returned HTTP {resp.status_code}. Fallback triggered."
-                self.last_used_source = "fallback_dev_catalog"
-                return self.fallback.search_products(query, category, gender, color, size, design, fandom, fit, sleeve, max_price, min_rating, merchant, limit)
-
-            data = resp.json()
-            raw_products = data.get("products", [])
-
-            if not raw_products:
-                self.last_status_message = "⚠️ Bewakoof API returned empty products array. Fallback triggered."
-                self.last_used_source = "fallback_dev_catalog"
-                return self.fallback.search_products(query, category, gender, color, size, design, fandom, fit, sleeve, max_price, min_rating, merchant, limit)
-
-            query_terms = [t for t in q_lower.split() if t not in ["men", "women", "clothing", "buy", "find", "get", "tshirt", "t-shirt", "shirt"] and t not in _KNOWN_COLORS]
-            
-            matched_products: List[Product] = []
-
-            for raw in raw_products:
-                prod = self._map_to_product(raw, query_terms)
-                if not prod:
-                    continue
-
-                # Filter by Category (e.g. Ensure T-Shirt doesn't return Jeans/Joggers)
-                if category:
-                    prod_subclass = str(raw.get("subclass") or raw.get("category_info", {}).get("subclass") or raw.get("type") or "").lower()
-                    prod_title_lower = prod.title.lower()
-                    if category == "t-shirt" and ("t-shirt" not in prod_subclass and "tshirt" not in prod_subclass and "t-shirt" not in prod_title_lower and "tshirt" not in prod_title_lower and "tee" not in prod_title_lower):
-                        continue
-                    elif category == "hoodie" and ("hoodie" not in prod_subclass and "sweatshirt" not in prod_subclass and "hoodie" not in prod_title_lower):
-                        continue
-                    elif category == "joggers" and ("jogger" not in prod_subclass and "trackpant" not in prod_subclass and "jogger" not in prod_title_lower):
-                        continue
-                    elif category == "jeans" and ("jean" not in prod_subclass and "denim" not in prod_subclass and "jean" not in prod_title_lower):
-                        continue
-
-                # Filter by Price
-                if max_price is not None and prod.price > max_price:
-                    continue
-
-                # Filter by Rating
-                if min_rating is not None and prod.rating < min_rating:
-                    continue
-
-                # Filter by Size
-                if size:
-                    available_sizes = [s.upper() for s in prod.specs.get("available_sizes", [])]
-                    if size.upper() not in available_sizes:
-                        continue
-
-                # Filter by Color
-                prod_color = str(prod.specs.get("color", "")).lower()
-                if target_color and target_color not in prod_color and prod_color not in target_color:
-                    continue
-
-                # Filter by Design Pattern (Graphic Print, Typography, Solid, Washed)
-                if design:
-                    prod_design = str(prod.specs.get("design", "")).lower()
-                    if design.lower() not in prod_design and prod_design not in design.lower():
-                        continue
-
-                # Filter by Fandom / Merchandise Partner (Marvel, DC, Harry Potter, Disney, Anime)
-                if fandom:
-                    prod_partner = str(prod.specs.get("fandom_partner", "")).lower()
-                    prod_title = prod.title.lower()
-                    fandom_kw = fandom.lower()
-                    if fandom_kw not in prod_partner and fandom_kw not in prod_title:
-                        continue
-
-                # Filter by Fit (Oversized, Boyfriend, Regular)
-                if fit:
-                    prod_fit = str(prod.specs.get("fit", "")).lower()
-                    if fit.lower() not in prod_fit:
-                        continue
-
-                # Filter by Sleeve (Half, Full, Sleeveless)
-                if sleeve:
-                    prod_sleeve = str(prod.specs.get("sleeve", "")).lower()
-                    if sleeve.lower() not in prod_sleeve:
-                        continue
-
-                matched_products.append(prod)
-                if len(matched_products) >= limit:
-                    break
-
-            # Fallback to general list if ultra-narrow combo had 0 hits
-            if not matched_products and raw_products:
-                for raw in raw_products[:limit]:
-                    p = self._map_to_product(raw, query_terms)
-                    if p:
-                        matched_products.append(p)
-                self.last_status_message = f"ℹ️ Exact combo not found in top batch. Showing trending {target_gender.title()} items."
-            else:
-                filters_desc = [target_gender.title()]
-                if target_color: filters_desc.append(target_color.title())
-                if design: filters_desc.append(design)
-                if fandom: filters_desc.append(f"Theme: {fandom}")
-                if fit: filters_desc.append(fit)
-                if size: filters_desc.append(f"Size {size.upper()}")
-                self.last_status_message = f"🟢 Retrieved {len(matched_products)} live products [{' | '.join(filters_desc)}] from Bewakoof.com!"
-
-            self.last_used_source = "bewakoof_live_api"
-            print(self.last_status_message)
-            return matched_products[:limit]
-
+            raw_products = self._fetch_collection(handle, fetch_limit=safe_fetch_limit)
         except Exception as e:
-            self.last_status_message = f"⚠️ Bewakoof API request failed ({str(e)}). Fallback triggered."
+            self.last_status_message = f"⚠️ Bewakoof request failed: {e}. Fallback triggered."
             self.last_used_source = "fallback_dev_catalog"
-            print(self.last_status_message)
-            return self.fallback.search_products(query, category, gender, color, size, design, fandom, fit, sleeve, max_price, min_rating, merchant, limit)
+            return self.fallback.search_products(query, category, gender, color, size, design, fandom, fit, sleeve, fabric, neck, max_price, min_rating, merchant, limit)
+
+        if not raw_products:
+            # Handle 404 or empty — try one level up (gender fallback)
+            fallback_handle = f"{g}-clothing"
+            print(f"[Bewakoof] '{handle}' empty. Trying '{fallback_handle}'.")
+            try:
+                raw_products = self._fetch_collection(fallback_handle, fetch_limit=60)
+            except Exception:
+                pass
+
+        if not raw_products:
+            self.last_status_message = "⚠️ No products from API. Fallback triggered."
+            self.last_used_source = "fallback_dev_catalog"
+            return self.fallback.search_products(query, category, gender, color, size, design, fandom, fit, sleeve, fabric, neck, max_price, min_rating, merchant, limit)
+
+        # ── Step 3: Map raw JSON to canonical Products ────────────────────────
+        query_terms = [t for t in prompt_lower.split() if len(t) > 2]
+        all_products: List[Product] = []
+        for raw in raw_products:
+            p = self.mapper.map(raw, query_terms)
+            if p:
+                all_products.append(p)
+
+        # ── Step 4: Post-filters ──────────────────────────────────────────────
+
+        # 4a. Subclass filter (category bleed prevention)
+        #     e.g. men-clothing should only return T-Shirts when user asked for t-shirts
+        if needs_subclass_filter and category:
+            SUBCLASS_MAP = {
+                "t-shirt":  ["T-Shirt", "Tee"],
+                "hoodie":   ["Hoodies", "Sweatshirt", "Hoodie"],
+                "joggers":  ["Joggers", "Track Pants"],
+                "jeans":    ["Jeans", "Denim"],
+                "shirt":    ["Shirt"],
+                "sliders":  ["Sliders", "Flip Flops & Sliders", "Clogs"],
+                "footwear": ["Sliders", "Casual Shoes", "Clogs", "Flip Flops & Sliders"],
+            }
+            allowed_subclasses = SUBCLASS_MAP.get(category.lower(), [])
+            if allowed_subclasses:
+                all_products = [
+                    p for p in all_products
+                    if any(
+                        sub.lower() in p.specs.get("subclass", "").lower()
+                        for sub in allowed_subclasses
+                    )
+                ]
+
+        # 4b. Color filter
+        if color and color.lower() != "any":
+            cl = color.lower()
+            all_products = [
+                p for p in all_products
+                if cl in p.specs.get("color", "").lower()
+            ]
+
+        # 4c. Design filter
+        if design and design.lower() != "any":
+            dl = design.lower()
+            all_products = [
+                p for p in all_products
+                if dl in p.specs.get("design", "").lower()
+            ]
+
+        # 4d. Fit filter
+        if fit and fit.lower() != "any":
+            fl = fit.lower()
+            all_products = [
+                p for p in all_products
+                if fl in p.specs.get("fit", "").lower()
+            ]
+
+        # 4e. Sleeve filter
+        if sleeve and sleeve.lower() != "any":
+            sl = sleeve.lower()
+            all_products = [
+                p for p in all_products
+                if sl in p.specs.get("sleeve", "").lower()
+            ]
+
+        # 4f. Fabric filter
+        if fabric and fabric.lower() != "any":
+            fb = fabric.lower()
+            all_products = [
+                p for p in all_products
+                if fb in p.specs.get("fabric", "").lower()
+            ]
+
+        # 4g. Neck filter
+        if neck and neck.lower() != "any":
+            nk = neck.lower()
+            all_products = [
+                p for p in all_products
+                if nk in p.specs.get("neck", "").lower()
+            ]
+
+        # 4f. Size filter
+        if size:
+            sz = size.upper()
+            all_products = [
+                p for p in all_products
+                if sz in [s.upper() for s in p.specs.get("available_sizes", [])]
+            ]
+
+        # 4g. Price filter
+        if max_price is not None:
+            all_products = [p for p in all_products if p.price <= max_price]
+
+        # 4h. Rating filter
+        if min_rating is not None:
+            all_products = [p for p in all_products if p.rating >= min_rating]
+
+        # 4i. Character-level post-filter
+        #     "Iron Man" → Marvel collection → only keep items with "Iron Man" in title
+        #     "Batman" → batman-merchandise → keep all (already scoped)
+        #     "Marvel" → marvel collection → keep all Marvel items (no specific char)
+        specific_char = _detect_specific_character(prompt_lower)
+        if specific_char and fandom:
+            char_keywords = _CHARACTER_KEYWORDS.get(specific_char, [])
+            char_filtered = [
+                p for p in all_products
+                if any(kw in p.title.lower() for kw in char_keywords)
+            ]
+            # Only apply if we got results — otherwise keep the full set
+            if char_filtered:
+                all_products = char_filtered
+                print(f"[Bewakoof] Character post-filter '{specific_char}' → {len(char_filtered)} items")
+
+        # ── Step 5: Status & Return ───────────────────────────────────────────
+        if all_products:
+            filters = [g.title()]
+            if color and color != "Any": filters.append(color)
+            if design and design != "Any": filters.append(design)
+            if fandom and fandom not in ("None", ""): filters.append(f"Theme:{fandom}")
+            if specific_char and fandom: filters.append(f"Char:{specific_char}")
+            if sleeve and sleeve != "Any": filters.append(sleeve)
+            if fabric and fabric != "Any": filters.append(f"Fabric:{fabric}")
+            if neck and neck != "Any": filters.append(f"Neck:{neck}")
+            if size: filters.append(f"Size:{size}")
+            self.last_status_message = f"🟢 {len(all_products)} products [{' | '.join(filters)}] from handle '{handle}'"
+        else:
+            # Relaxed fallback: return top trending items from same handle without attribute filters
+            trending = [self.mapper.map(r, query_terms) for r in raw_products[:limit] if self.mapper.map(r, query_terms)]
+            if trending:
+                self.last_status_message = f"ℹ️ Exact filters matched 0 items. Showing top trending from '{handle}'."
+                all_products = trending
+            else:
+                self.last_status_message = "⚠️ 0 matches even after relaxation. Fallback triggered."
+                self.last_used_source = "fallback_dev_catalog"
+                return self.fallback.search_products(query, category, gender, color, size, design, fandom, fit, sleeve, fabric, neck, max_price, min_rating, merchant, limit)
+
+        self.last_used_source = "bewakoof_live_api"
+        print(self.last_status_message)
+        return all_products[:limit]
 
     def get_product_details(self, product_id: str) -> Optional[Product]:
         return self.fallback.get_product_details(product_id)

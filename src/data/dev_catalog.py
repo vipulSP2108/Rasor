@@ -41,6 +41,8 @@ class DevCatalogProvider(BaseCatalogProvider):
         fandom: Optional[str] = None,
         fit: Optional[str] = None,
         sleeve: Optional[str] = None,
+        fabric: Optional[str] = None,
+        neck: Optional[str] = None,
         max_price: Optional[float] = None,
         min_rating: Optional[float] = None,
         merchant: Optional[str] = None,

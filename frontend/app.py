@@ -126,12 +126,12 @@ with st.sidebar:
     st.subheader("🧠 LLM & Fallback Models")
     st.session_state.config.primary_model = st.selectbox(
         "Primary Model",
-        options=["gemini-2.5-flash", "gemini-2.5-pro", "llama-3.3-70b-versatile"],
+        options=["gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-flash-latest"],
         index=0
     )
     st.session_state.config.fallback_model = st.selectbox(
         "Fallback Model (on error/limit)",
-        options=["llama-3.3-70b-versatile", "gemini-2.5-flash-lite", "gpt-4o-mini"],
+        options=["openai/gpt-oss-20b", "qwen/qwen3.6-27b", "groq/compound-mini"],
         index=0
     )
 
@@ -190,12 +190,21 @@ if (search_clicked or not st.session_state.search_results) and user_prompt:
             fit=canonical.fit.value if canonical.fit.value != "Any" else None,
             sleeve=canonical.sleeve.value if canonical.sleeve.value != "Any" else None,
             max_price=effective_budget,
-            limit=st.session_state.config.max_search_results * 2
+            limit=40 # Fetch enough products to show in the extra products section
         )
 
     with st.spinner("🧠 Stage 3: LLM Validating candidate relevance & filtering false positives..."):
-        validated_products, evaluations = brain.evaluate_candidates(user_prompt, raw_candidates)
+        llm_eval_limit = st.session_state.config.max_search_results * 2
+        llm_candidates = raw_candidates[:llm_eval_limit]
+        extra_untested_products = raw_candidates[llm_eval_limit:]
+
+        validated_products, evaluations = brain.evaluate_candidates(user_prompt, llm_candidates)
         st.session_state.search_results = validated_products[:st.session_state.config.max_search_results]
+        
+        # Store ALL products that are NOT displayed in the top search_results
+        displayed_ids = {p.id for p in st.session_state.search_results}
+        st.session_state.rejected_products = [p for p in raw_candidates if p.id not in displayed_ids]
+        
         st.session_state.evaluations = evaluations
 
         # Capture status message for UI display
@@ -307,3 +316,47 @@ if st.session_state.search_results:
             "llm_evaluations": [e.model_dump() for e in st.session_state.evaluations],
             "products_returned": [p.model_dump() for p in st.session_state.search_results]
         })
+
+# ------------------------------------------------------------------------------
+# 7. Discarded Products Visualizer (Extra products that failed QA / overflow)
+# ------------------------------------------------------------------------------
+if "rejected_products" in st.session_state and st.session_state.rejected_products:
+    st.markdown("---")
+    rejected = st.session_state.rejected_products
+    local_eval_map = {e.product_id: e for e in st.session_state.evaluations}
+    
+    with st.expander(f"📦 Additional Catalog Items & Filtered Products ({len(rejected)} items)", expanded=False):
+        # Render in rows of 5
+        for i in range(0, len(rejected), 5):
+            row_cols = st.columns(5)
+            for j in range(5):
+                if i + j < len(rejected):
+                    prod = rejected[i + j]
+                    eval_info = local_eval_map.get(prod.id)
+                    with row_cols[j]:
+                        with st.container(border=True):
+                            # Product Image
+                            img_url = prod.specs.get("display_image") or prod.specs.get("image_url")
+                            if img_url:
+                                st.image(img_url, use_container_width=True)
+                            else:
+                                st.image("https://via.placeholder.com/300x400?text=No+Image", use_container_width=True)
+
+                            # Title & Price
+                            st.markdown(f"**{prod.title[:45]}...**" if len(prod.title) > 45 else f"**{prod.title}**")
+                            
+                            colA, colB = st.columns(2)
+                            with colA:
+                                st.markdown(f"**{curr_sym}{prod.price:.0f}**")
+                            with colB:
+                                st.markdown(f"⭐ {prod.rating:.1f}")
+                                
+                            # Reason / Status
+                            if eval_info and eval_info.reason:
+                                st.caption(f"🧠 **QA Reason:** {eval_info.reason}")
+                            else:
+                                st.caption("⚡ Additional catalog item")
+                            
+                            if prod.source_url:
+                                st.link_button("View ↗", prod.source_url, use_container_width=True)
+
