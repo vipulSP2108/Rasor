@@ -1,0 +1,233 @@
+"""Domain models, canonical enums, and state definitions for Rasor Agentic Commerce."""
+
+from datetime import datetime
+from enum import Enum
+from typing import Any, Dict, List, Optional
+from pydantic import BaseModel, Field
+
+
+# ------------------------------------------------------------------------------
+# 1. Canonical Commerce Enums (Standardized Taxonomy)
+# ------------------------------------------------------------------------------
+
+class GenderEnum(str, Enum):
+    MEN = "men"
+    WOMEN = "women"
+    UNISEX = "unisex"
+    ALL = "all"
+
+
+class CategoryEnum(str, Enum):
+    TSHIRT = "t-shirt"
+    HOODIE = "hoodie"
+    JOGGERS = "joggers"
+    JEANS = "jeans"
+    SHIRT = "shirt"
+    VEST = "vest"
+    FOOTWEAR = "footwear"
+    ELECTRONICS = "electronics"
+    GENERAL = "general"
+
+
+class ColorEnum(str, Enum):
+    BLACK = "Black"
+    BLUE = "Blue"
+    WHITE = "White"
+    RED = "Red"
+    GREEN = "Green"
+    ORANGE = "Orange"
+    GREY = "Grey"
+    YELLOW = "Yellow"
+    MAROON = "Maroon"
+    BEIGE = "Beige"
+    BROWN = "Brown"
+    NAVY = "Navy"
+    CYAN = "Cyan"
+    MULTI = "Multi"
+    ANY = "Any"
+
+
+class DesignEnum(str, Enum):
+    SOLID = "Solid"                       # Plain, basic, single color
+    GRAPHIC_PRINT = "Graphic Print"       # Artwork, prints, anime
+    TYPOGRAPHY = "Typography"             # Text, quotes, slogans
+    ALL_OVER_PRINT = "All Over Print"     # Patterned across entire garment
+    WASHED = "Washed"                     # Acid wash, vintage wash
+    CHECKED = "Checked"                   # Plaid, checks
+    ANY = "Any"
+
+
+class FitEnum(str, Enum):
+    OVERSIZED = "Oversized Fit"
+    REGULAR = "Regular Fit"
+    BOYFRIEND = "Boyfriend Fit"
+    BAGGY = "Baggy Fit"
+    SUPER_BAGGY = "Super Baggy Fit"
+    SLIM = "Slim Fit"
+    ANY = "Any"
+
+
+class SleeveEnum(str, Enum):
+    HALF = "Half Sleeve"
+    FULL = "Full Sleeve"
+    SLEEVELESS = "Sleeveless"
+    ANY = "Any"
+
+
+class FandomEnum(str, Enum):
+    MARVEL = "Marvel"
+    DC = "DC"
+    DISNEY = "Disney"
+    HARRY_POTTER = "Harry Potter"
+    ANIME = "Anime / Cartoons"
+    NONE = "None"
+
+
+# ------------------------------------------------------------------------------
+# 2. Canonical Parsed Query Schema
+# ------------------------------------------------------------------------------
+
+class CanonicalShoppingQuery(BaseModel):
+    """Structured, canonical query normalized by LLM from user free-form speech."""
+    original_prompt: str
+    cleaned_keywords: str = Field(..., description="Core product search keywords without noise")
+    gender: GenderEnum = Field(default=GenderEnum.MEN, description="Target gender")
+    category: CategoryEnum = Field(default=CategoryEnum.TSHIRT, description="Target category")
+    color: ColorEnum = Field(default=ColorEnum.ANY, description="Target color")
+    design: DesignEnum = Field(default=DesignEnum.ANY, description="Design/print pattern")
+    fit: FitEnum = Field(default=FitEnum.ANY, description="Fit style")
+    sleeve: SleeveEnum = Field(default=SleeveEnum.ANY, description="Sleeve type")
+    fandom: FandomEnum = Field(default=FandomEnum.NONE, description="Pop-culture collaboration")
+    size: Optional[str] = Field(default=None, description="Explicit requested size (e.g. 'L', 'M', 'XL')")
+    max_price: Optional[float] = Field(default=None, description="Hard budget cap extracted from text")
+    min_rating: Optional[float] = Field(default=None, description="Minimum review rating requested")
+
+
+# ------------------------------------------------------------------------------
+# 3. Product Model & Relevance Assessment
+# ------------------------------------------------------------------------------
+
+class Product(BaseModel):
+    id: str = Field(..., description="Unique product identifier or SKU")
+    title: str = Field(..., description="Full title of the product")
+    brand: str = Field(default="Generic", description="Brand name")
+    merchant: str = Field(..., description="Merchant / Store name")
+    price: float = Field(..., ge=0.0, description="Unit price")
+    currency: str = Field(default="USD", description="Currency code")
+    rating: float = Field(default=0.0, ge=0.0, le=5.0, description="Customer rating out of 5.0")
+    review_count: int = Field(default=0, ge=0, description="Total review count")
+    in_stock: bool = Field(default=True, description="Inventory availability")
+    stock_quantity: int = Field(default=10, ge=0, description="Available stock count")
+    category: str = Field(default="General", description="Category name")
+    description: str = Field(default="", description="Detailed product description")
+    tags: List[str] = Field(default_factory=list, description="Search keywords & tags")
+    shipping_days: int = Field(default=3, ge=0, description="Estimated delivery days")
+    shipping_cost: float = Field(default=0.0, ge=0.0, description="Shipping cost")
+    source_url: Optional[str] = Field(default=None, description="Direct URL if scraped/API")
+    specs: Dict[str, Any] = Field(default_factory=dict, description="Key-value specifications")
+    discount_codes: List[str] = Field(default_factory=list, description="Applicable discount codes")
+
+
+class ProductRelevanceEvaluation(BaseModel):
+    """LLM assessment of whether a candidate product strictly satisfies the user's intent."""
+    product_id: str
+    product_title: str
+    is_relevant: bool = Field(..., description="True if product satisfies user intent, False if false positive")
+    match_score: float = Field(..., ge=0.0, le=1.0, description="Relevance score from 0.0 to 1.0")
+    reason: str = Field(..., description="Brief explanation for accept or reject")
+
+
+# ------------------------------------------------------------------------------
+# 4. Cart & Line Items
+# ------------------------------------------------------------------------------
+
+class CartItem(BaseModel):
+    product_id: str
+    title: str
+    merchant: str
+    unit_price: float
+    quantity: int = Field(default=1, ge=1)
+    applied_discount: float = Field(default=0.0, ge=0.0)
+
+    @property
+    def total_price(self) -> float:
+        return max(0.0, (self.unit_price * self.quantity) - self.applied_discount)
+
+
+class CartStatus(str, Enum):
+    ACTIVE = "active"
+    LOCKED = "locked"
+    CHECKED_OUT = "checked_out"
+
+
+class Cart(BaseModel):
+    cart_id: str
+    merchant: str
+    items: List[CartItem] = Field(default_factory=list)
+    subtotal: float = 0.0
+    tax: float = 0.0
+    shipping_cost: float = 0.0
+    total_discount: float = 0.0
+    final_total: float = 0.0
+    currency: str = "USD"
+    status: CartStatus = CartStatus.ACTIVE
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+    def recalculate(self, tax_rate: float = 0.08, free_shipping_threshold: float = 50.0, default_shipping: float = 5.0) -> None:
+        self.subtotal = sum(item.total_price for item in self.items)
+        self.tax = round(self.subtotal * tax_rate, 2)
+        if self.subtotal >= free_shipping_threshold or len(self.items) == 0:
+            self.shipping_cost = 0.0
+        else:
+            self.shipping_cost = default_shipping
+        self.final_total = round(self.subtotal + self.tax + self.shipping_cost, 2)
+
+
+# ------------------------------------------------------------------------------
+# 5. Guardrails & Payments
+# ------------------------------------------------------------------------------
+
+class GuardrailViolation(str, Enum):
+    NONE = "none"
+    BUDGET_EXCEEDED = "budget_exceeded"
+    UNAUTHORIZED_MERCHANT = "unauthorized_merchant"
+    HITL_REQUIRED = "hitl_required"
+    PRICE_MISMATCH = "price_mismatch"
+
+
+class GuardrailResult(BaseModel):
+    passed: bool
+    violation: GuardrailViolation = GuardrailViolation.NONE
+    message: str = "Validation passed"
+    requires_human_approval: bool = False
+    details: Dict[str, Any] = Field(default_factory=dict)
+
+
+class SharedPaymentToken(BaseModel):
+    token_id: str
+    authorized_amount: float
+    currency: str = "USD"
+    merchant: str
+    expires_in_seconds: int = 600
+    status: str = "active"
+
+
+class OrderConfirmation(BaseModel):
+    order_id: str
+    cart_id: str
+    transaction_id: str
+    merchant: str
+    items: List[CartItem]
+    total_amount: float
+    currency: str
+    estimated_delivery: str
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ThoughtStep(BaseModel):
+    step_index: int
+    thought: str
+    action: Optional[str] = None
+    action_input: Optional[Dict[str, Any]] = None
+    observation: Optional[Any] = None
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
