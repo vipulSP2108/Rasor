@@ -20,10 +20,12 @@ class GenderEnum(str, Enum):
 class CategoryEnum(str, Enum):
     TSHIRT = "t-shirt"
     HOODIE = "hoodie"
+    SWEATSHIRT = "sweatshirt"
     JOGGERS = "joggers"
     JEANS = "jeans"
     SHIRT = "shirt"
     VEST = "vest"
+    SLIDERS = "sliders"
     FOOTWEAR = "footwear"
     ELECTRONICS = "electronics"
     GENERAL = "general"
@@ -64,13 +66,36 @@ class FitEnum(str, Enum):
     BAGGY = "Baggy Fit"
     SUPER_BAGGY = "Super Baggy Fit"
     SLIM = "Slim Fit"
+    RELAXED = "Relaxed Fit"
+    LOOSE = "Loose Fit"
     ANY = "Any"
 
 
 class SleeveEnum(str, Enum):
-    HALF = "Half Sleeve"
     FULL = "Full Sleeve"
+    HALF = "Half Sleeve"
     SLEEVELESS = "Sleeveless"
+    SHORT = "Short Sleeve"
+    ANY = "Any"
+
+
+class FabricEnum(str, Enum):
+    COTTON = "Cotton"
+    POLYESTER = "Polyester"
+    BLEND = "Blend"
+    FLEECE = "Fleece"
+    LINEN = "Linen"
+    NYLON = "Nylon"
+    ANY = "Any"
+
+
+class NeckEnum(str, Enum):
+    ROUND = "Round Neck"
+    V_NECK = "V-Neck"
+    POLO = "Polo"
+    COLLAR = "Collar"
+    HOOD = "Hood"
+    CREW = "Crew Neck"
     ANY = "Any"
 
 
@@ -94,10 +119,12 @@ class CanonicalShoppingQuery(BaseModel):
     gender: GenderEnum = Field(default=GenderEnum.MEN, description="Target gender")
     category: CategoryEnum = Field(default=CategoryEnum.TSHIRT, description="Target category")
     color: ColorEnum = Field(default=ColorEnum.ANY, description="Target color")
-    design: DesignEnum = Field(default=DesignEnum.ANY, description="Design/print pattern")
-    fit: FitEnum = Field(default=FitEnum.ANY, description="Fit style")
-    sleeve: SleeveEnum = Field(default=SleeveEnum.ANY, description="Sleeve type")
-    fandom: FandomEnum = Field(default=FandomEnum.NONE, description="Pop-culture collaboration")
+    design: DesignEnum = Field(default=DesignEnum.ANY, description="Specific design theme")
+    fit: FitEnum = Field(default=FitEnum.ANY, description="Desired fit")
+    sleeve: SleeveEnum = Field(default=SleeveEnum.ANY, description="Sleeve length")
+    fabric: FabricEnum = Field(default=FabricEnum.ANY, description="Material fabric")
+    neck: NeckEnum = Field(default=NeckEnum.ANY, description="Neckline style")
+    fandom: FandomEnum = Field(default=FandomEnum.NONE, description="Specific IP or fandom")
     size: Optional[str] = Field(default=None, description="Explicit requested size (e.g. 'L', 'M', 'XL')")
     max_price: Optional[float] = Field(default=None, description="Hard budget cap extracted from text")
     min_rating: Optional[float] = Field(default=None, description="Minimum review rating requested")
