@@ -228,7 +228,8 @@ class AgentBrain:
             '  "size": string or null (e.g. "L", "M", "XL", "2XL", "UK 9" for footwear),\n'
             '  "max_price": float or null,\n'
             '  "min_rating": float or null,\n'
-            '  "fast_shipping_requested": boolean (true if user wants fast/early delivery, else false)\n'
+            '  "fast_shipping_requested": boolean (true if user wants fast/early delivery, else false),\n'
+            '  "negative_keywords": [string] (list of explicit exclusions like "logo", "polo", "printed")\n'
             "}\n\n"
             "RULES:\n"
             "- 'plain', 'solid', 'basic', 'no print' → design: 'Solid'\n"
@@ -263,6 +264,7 @@ class AgentBrain:
                     data["design"] = data.get("design", "Any") if data.get("design") in [e.value for e in DesignEnum] else "Any"
                     data["fit"] = data.get("fit", "Any") if data.get("fit") in [e.value for e in FitEnum] else "Any"
                     data["sleeve"] = data.get("sleeve", "Any") if data.get("sleeve") in [e.value for e in SleeveEnum] else "Any"
+                    data["negative_keywords"] = data.get("negative_keywords", [])
                     data["fabric"] = data.get("fabric", "Any") if data.get("fabric") in [e.value for e in FabricEnum] else "Any"
                     data["neck"] = data.get("neck", "Any") if data.get("neck") in [e.value for e in NeckEnum] else "Any"
                     data["fandom"] = data.get("fandom", "None") if data.get("fandom") in [e.value for e in FandomEnum] else "None"
@@ -306,10 +308,42 @@ class AgentBrain:
         self,
         user_prompt: str,
         candidates: List[Product],
+        canonical: Optional["CanonicalShoppingQuery"] = None,
     ) -> Tuple[List[Product], List[ProductRelevanceEvaluation]]:
-        """LLM QA: Verifies retrieved products against user intent. Rejects false positives."""
+        """LLM QA: Verifies retrieved products against user intent. Rejects false positives.
+
+        Takes an optional `canonical` query to inject hard rules directly into the LLM prompt,
+        such as negative keywords the user explicitly excluded and positive signals they asked for.
+        """
         if not candidates:
             return [], []
+
+        # ── Build the constraint context block ──
+        constraint_lines = []
+        neg_keywords = getattr(canonical, "negative_keywords", []) if canonical else []
+        if neg_keywords:
+            constraint_lines.append(
+                f"HARD NEGATIONS (any product containing these words MUST be scored <= 0.15 and rejected): "
+                f"{', '.join(neg_keywords)}"
+            )
+
+        # Pull positive signals from canonical for explicit mention in the prompt
+        pos_signals = []
+        if canonical:
+            if canonical.color.value != "Any":
+                pos_signals.append(f"color={canonical.color.value}")
+            if canonical.design.value != "Any":
+                pos_signals.append(f"design={canonical.design.value}")
+            if canonical.fit.value != "Any":
+                pos_signals.append(f"fit={canonical.fit.value}")
+            if canonical.neck.value != "Any":
+                pos_signals.append(f"neck={canonical.neck.value}")
+            if canonical.fandom.value != "None":
+                pos_signals.append(f"fandom={canonical.fandom.value}")
+        if pos_signals:
+            constraint_lines.append(f"POSITIVE REQUIREMENTS (must be present for a high match_score): {', '.join(pos_signals)}")
+
+        constraint_block = "\n".join(constraint_lines) if constraint_lines else "No hard constraints beyond the user's prompt."
 
         cand_summary = [
             {
@@ -327,32 +361,39 @@ class AgentBrain:
                 "sizes_in_stock": p.specs.get("available_sizes"),
                 "rating": p.rating,
                 "review_count": p.review_count,
-                "rich_description": p.rich_description,
+                "rich_description": (p.rich_description or "")[:300],
             }
             for p in candidates
         ]
 
         system = (
-            "You are an e-commerce QA agent. The user requested a specific product. "
-            "For each candidate, decide if it matches the user's intent.\n\n"
-            "CRITICAL RULES FOR REJECTION:\n"
-            "  - Only reject if a product DIRECTLY CONTRADICTS an explicit user requirement.\n"
-            "  - Reject if user asked for 'solid'/'plain' but product has 'Graphic Print' or 'Typography'.\n"
-            "  - Reject if user asked for a specific category (e.g., jeans) but product is different (e.g., shorts).\n"
-            "  - Reject if user asked for a specific character/fandom (e.g., Iron Man) but product shows another.\n\n"
-            "CRITICAL RULES FOR ACCEPTANCE (DO NOT REJECT):\n"
-            "  - If the user's request is broad (e.g., 'black t-shirt'), ACCEPT products with additional features "
-            "(like Oversized fit, Graphic Print, Polo, Typography, V-neck, etc.) because the user did not explicitly forbid them.\n"
-            "  - DO NOT reject a 'Graphic Print' or 'Oversized' item just because the user didn't explicitly ask for it, "
-            "as long as it satisfies their broad keywords.\n\n"
-            "Output ONLY this JSON:\n"
+            "You are a precision e-commerce ranking and filtering agent for an Indian fashion store.\n"
+            "Your job is to evaluate each candidate product against the user's exact intent and assign "
+            "a match_score (0.0–1.0) and is_relevant flag.\n\n"
+            "## Scoring Guidelines\n"
+            "  - 0.9–1.0: Exceptional match — product satisfies every explicit user requirement.\n"
+            "  - 0.7–0.89: Good match — satisfies the core request, minor extras the user didn't forbid.\n"
+            "  - 0.5–0.69: Partial match — satisfies category/gender but misses some specifics.\n"
+            "  - 0.0–0.49: REJECT — contradicts an explicit requirement. Set is_relevant=false.\n\n"
+            "## Hard Rules\n"
+            "  - If the user asked for a specific character/theme (e.g. Batman), a shirt without any Batman reference scores <= 0.3.\n"
+            "  - If the user's prompt mentions a specific design feature (e.g. 'logo', 'illustration', 'bold text'), "
+            "score products that clearly match HIGHER and products that clearly DON'T match LOWER.\n"
+            "  - If a product title/description contains a HARD NEGATION keyword listed below, it MUST score <= 0.15 and is_relevant=false.\n"
+            "  - Broad queries (e.g. 'black t-shirt') should accept extras like oversized, graphic print — do NOT penalise them.\n\n"
+            f"## Extracted Constraints\n{constraint_block}\n\n"
+            "Output ONLY valid JSON:\n"
             "{\n"
             '  "evaluations": [\n'
-            '    {"product_id": "...", "product_title": "...", "is_relevant": true, "match_score": 0.95, "reason": "..."}\n'
+            '    {"product_id": "...", "product_title": "...", "is_relevant": true, "match_score": 0.95, "reason": "concise explanation"}\n'
             "  ]\n"
             "}"
         )
-        msg = f"User Intent: \"{user_prompt}\"\nCandidates:\n{json.dumps(cand_summary, indent=2)}"
+        msg = (
+            f"User Intent: \"{user_prompt}\"\n"
+            f"Extracted Canonical Attributes: {json.dumps({k: str(v) for k, v in (canonical.model_dump().items() if canonical else {}.items())})}\n\n"
+            f"Candidates:\n{json.dumps(cand_summary, indent=2)}"
+        )
 
         raw_json = self._call_llm(msg, system)
         evaluations: List[ProductRelevanceEvaluation] = []
@@ -370,13 +411,21 @@ class AgentBrain:
                                 product_id=p.id,
                                 product_title=p.title,
                                 is_relevant=bool(ev_data.get("is_relevant", True)),
-                                match_score=float(ev_data.get("match_score", 0.8)),
+                                match_score=float(ev_data.get("match_score", 0.7)),
                                 reason=str(ev_data.get("reason", "Passed LLM evaluation")),
                             )
                             evaluations.append(ev)
                             if ev.is_relevant and ev.match_score >= 0.5:
                                 accepted.append(p)
                         else:
+                            # Product not evaluated by LLM — assign neutral score, keep it
+                            evaluations.append(ProductRelevanceEvaluation(
+                                product_id=p.id,
+                                product_title=p.title,
+                                is_relevant=True,
+                                match_score=0.6,
+                                reason="Not evaluated — kept as neutral candidate",
+                            ))
                             accepted.append(p)
                     return accepted, evaluations
                 except Exception as e:
@@ -388,7 +437,8 @@ class AgentBrain:
                 product_id=p.id,
                 product_title=p.title,
                 is_relevant=True,
-                match_score=0.9,
-                reason="Passed attribute and keyword pre-filters",
+                match_score=0.6,
+                reason="LLM unavailable — passed attribute pre-filters",
             ))
         return candidates, evaluations
+

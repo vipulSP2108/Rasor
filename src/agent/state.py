@@ -129,6 +129,7 @@ class CanonicalShoppingQuery(BaseModel):
     size: Optional[str] = Field(default=None, description="Explicit requested size (e.g. 'L', 'M', 'XL')")
     max_price: Optional[float] = Field(default=None, description="Hard budget cap extracted from text")
     min_rating: Optional[float] = Field(default=None, description="Minimum review rating requested")
+    negative_keywords: List[str] = Field(default_factory=list, description="Keywords explicitly excluded by user")
 
 
 # ------------------------------------------------------------------------------

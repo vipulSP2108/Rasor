@@ -237,11 +237,12 @@ if (search_clicked or not st.session_state.search_results) and user_prompt:
         def bayesian_score(p):
             return p.rating * math.log10(p.review_count + 1)
         
-        # Sort raw candidates by true quality
+        # Sort raw candidates by Bayesian quality first
         raw_candidates.sort(key=bayesian_score, reverse=True)
         
-        llm_eval_limit = st.session_state.config.max_search_results * 2
-        llm_candidates = raw_candidates[:llm_eval_limit]
+        # Evaluate ALL candidates — no artificial cap. The LLM will rank them.
+        llm_eval_limit = len(raw_candidates)
+        llm_candidates = raw_candidates[:]
         
         # Deep Enrichment
         if st.session_state.config.enable_deep_enrichment:
@@ -274,25 +275,45 @@ if (search_clicked or not st.session_state.search_results) and user_prompt:
                     # Enriches in place
                     list(executor.map(enrich, top_to_enrich))
         
-        extra_untested_products = raw_candidates[llm_eval_limit:]
+        # ── Aggressive Text-First Negation Filter ──
+        neg_keywords = getattr(canonical, 'negative_keywords', [])
+        if neg_keywords:
+            with st.spinner(f"🚫 Applying Negative Filters: {', '.join(neg_keywords)}..."):
+                filtered_llm = []
+                for p in llm_candidates:
+                    text_to_check = (p.title + " " + (p.rich_description or "")).lower()
+                    if any(neg.lower() in text_to_check for neg in neg_keywords):
+                        continue
+                    filtered_llm.append(p)
+                llm_candidates = filtered_llm
 
-        validated_products, evaluations = brain.evaluate_candidates(user_prompt, llm_candidates)
+        # No more "extra_untested" — all products are evaluated
+        validated_products, evaluations = brain.evaluate_candidates(
+            user_prompt, llm_candidates, canonical=canonical
+        )
         
         # Build eval map for fast lookup
         eval_map = {e.product_id: e for e in evaluations}
         
-        # Sort validated products strictly by LLM match score (descending), then by Bayesian score
-        validated_products.sort(key=lambda p: (eval_map[p.id].match_score if p.id in eval_map else 0.0, bayesian_score(p)), reverse=True)
+        # ── Composite ranking: LLM match score (70%) + Bayesian quality (30%) ──
+        # Normalise bayesian scores to 0-1 range for fair weighting
+        bayesian_scores = [bayesian_score(p) for p in validated_products]
+        max_b = max(bayesian_scores, default=1.0) or 1.0
+        def composite_score(p):
+            llm_score = eval_map[p.id].match_score if p.id in eval_map else 0.5
+            b_score = bayesian_score(p) / max_b  # normalised 0-1
+            return llm_score * 0.7 + b_score * 0.3
+        
+        validated_products.sort(key=composite_score, reverse=True)
         
         st.session_state.search_results = validated_products[:st.session_state.config.max_search_results]
         
-        # Store ALL products that are NOT displayed in the top search_results
+        # Store all rejected/lower-scored products
         displayed_ids = {p.id for p in st.session_state.search_results}
         st.session_state.rejected_products = [p for p in raw_candidates if p.id not in displayed_ids]
-        
-        # Sort rejected products so high QA scores appear first, followed by untested, followed by low QA scores
+        # Sort rejected by the same composite score
         st.session_state.rejected_products.sort(
-            key=lambda p: (eval_map[p.id].match_score if p.id in eval_map else -0.1, bayesian_score(p)), 
+            key=lambda p: (eval_map[p.id].match_score if p.id in eval_map else 0.0, bayesian_score(p)),
             reverse=True
         )
         
@@ -428,7 +449,19 @@ if "rejected_products" in st.session_state and st.session_state.rejected_product
     st.markdown("---")
     rejected = st.session_state.rejected_products
     local_eval_map = {e.product_id: e for e in st.session_state.evaluations}
-    
+
+    # Re-sort by composite score so highest partial-matches appear first
+    import math as _math
+    def _b_score(p):
+        return p.rating * _math.log10(p.review_count + 1)
+    _all_b = [_b_score(p) for p in rejected]
+    _max_b = max(_all_b, default=1.0) or 1.0
+    def _composite(p):
+        ev = local_eval_map.get(p.id)
+        llm_s = ev.match_score if ev else 0.0
+        return llm_s * 0.7 + (_b_score(p) / _max_b) * 0.3
+    rejected = sorted(rejected, key=_composite, reverse=True)
+
     with st.expander(f"📦 Additional Catalog Items & Filtered Products ({len(rejected)} items)", expanded=False):
         # Render in rows of 5
         for i in range(0, len(rejected), 5):
@@ -454,13 +487,22 @@ if "rejected_products" in st.session_state and st.session_state.rejected_product
                                 st.markdown(f"**{curr_sym}{prod.price:.0f}**")
                             with colB:
                                 st.markdown(f"⭐ {prod.rating:.1f}")
-                                
-                            # Reason / Status
-                            if eval_info and eval_info.reason:
-                                st.caption(f"🧠 **QA Reason:** {eval_info.reason}")
+                            
+                            # Score badge + reason
+                            if eval_info:
+                                score_pct = int(eval_info.match_score * 100)
+                                if score_pct >= 65:
+                                    badge = f"🟡 {score_pct}% match"
+                                elif score_pct >= 40:
+                                    badge = f"🟠 {score_pct}% match"
+                                else:
+                                    badge = f"🔴 {score_pct}% — Filtered"
+                                st.caption(f"{badge}")
+                                st.caption(f"*{eval_info.reason}*")
                             else:
-                                st.caption("⚡ Additional catalog item")
+                                st.caption("⚡ Not evaluated")
                             
                             if prod.source_url:
                                 st.link_button("View ↗", prod.source_url, use_container_width=True)
+
 
