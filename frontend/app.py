@@ -13,6 +13,16 @@ import sys
 # Ensure project root is in python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+import importlib
+import src.config
+import src.agent.brain
+import src.data.bewakoof_api
+import src.data.shopify_api
+importlib.reload(src.config)
+importlib.reload(src.agent.brain)
+importlib.reload(src.data.bewakoof_api)
+importlib.reload(src.data.shopify_api)
+
 from src.config import (
     AgentConfig,
     ExecutionMode,
@@ -23,6 +33,7 @@ from src.agent.brain import AgentBrain
 from src.data.dev_catalog import DevCatalogProvider
 from src.data.scraper import GoogleShoppingScraper
 from src.data.bewakoof_api import BewakoofCatalogProvider
+from src.data.shopify_api import ShopifyCatalogProvider
 
 st.set_page_config(
     page_title="Rasor — Agentic Commerce",
@@ -33,7 +44,7 @@ st.set_page_config(
 # ------------------------------------------------------------------------------
 # 1. State Management (Decoupled Session State)
 # ------------------------------------------------------------------------------
-if "config" not in st.session_state:
+if "config" not in st.session_state or not hasattr(st.session_state.config, "enable_deep_enrichment") or not hasattr(st.session_state.config, "user_location"):
     st.session_state.config = AgentConfig(
         mode=ExecutionMode.LIVE,
         data_source=DataSourceType.BEWAKOOF_LIVE_API,
@@ -89,7 +100,7 @@ with st.sidebar:
             st.session_state.config.data_source = DataSourceType.GOOGLE_SHOPPING_SCRAPER
             st.session_state.config.currency = "USD"
         elif "Shopify" in source_choice:
-            st.session_state.config.data_source = DataSourceType.SHOPIFY_STOREFRONT_API
+            st.session_state.config.data_source = DataSourceType.SHOPIFY_STOREFRONT_LIVE_API
             st.session_state.config.currency = "USD"
         else:
             st.session_state.config.data_source = DataSourceType.MCP_SERVER
@@ -120,6 +131,32 @@ with st.sidebar:
         value=float(st.session_state.config.max_budget),
         step=100.0,
         help="Strict budget ceiling. The agent will refuse any order exceeding this total."
+    )
+
+    st.divider()
+    st.subheader("🔍 Search & Enrichment")
+    
+    st.session_state.config.enable_deep_enrichment = st.toggle(
+        "Enable Deep Product Enrichment",
+        value=st.session_state.config.enable_deep_enrichment,
+        help="Hits single-product APIs for richer descriptions, verified ratings, and bundles."
+    )
+    
+    st.session_state.config.max_deep_fetches = st.slider(
+        "Max Deep Fetches (Top K)",
+        min_value=1,
+        max_value=20,
+        value=st.session_state.config.max_deep_fetches,
+        help="Maximum concurrent API calls made to enrich products."
+    )
+
+    st.divider()
+    st.subheader("🚚 Shipping & Logistics")
+    st.session_state.config.user_location = st.selectbox(
+        "Destination City (Fast Shipping)",
+        options=["Not Set", "Mumbai", "Delhi", "Bengaluru", "New York", "London"],
+        index=0,
+        help="Used to estimate delivery times and filter products if 'fast delivery' is requested."
     )
 
     st.divider()
@@ -172,6 +209,8 @@ if (search_clicked or not st.session_state.search_results) and user_prompt:
     with st.spinner(f"📡 Stage 2: Querying {st.session_state.config.data_source.value} with normalized tokens..."):
         if st.session_state.config.data_source == DataSourceType.BEWAKOOF_LIVE_API:
             provider = BewakoofCatalogProvider()
+        elif st.session_state.config.data_source == DataSourceType.SHOPIFY_STOREFRONT_LIVE_API:
+            provider = ShopifyCatalogProvider()
         elif st.session_state.config.data_source == DataSourceType.GOOGLE_SHOPPING_SCRAPER:
             provider = GoogleShoppingScraper(max_retries=3)
         else:
@@ -194,16 +233,69 @@ if (search_clicked or not st.session_state.search_results) and user_prompt:
         )
 
     with st.spinner("🧠 Stage 3: LLM Validating candidate relevance & filtering false positives..."):
+        import math
+        def bayesian_score(p):
+            return p.rating * math.log10(p.review_count + 1)
+        
+        # Sort raw candidates by true quality
+        raw_candidates.sort(key=bayesian_score, reverse=True)
+        
         llm_eval_limit = st.session_state.config.max_search_results * 2
         llm_candidates = raw_candidates[:llm_eval_limit]
+        
+        # Deep Enrichment
+        if st.session_state.config.enable_deep_enrichment:
+            with st.spinner(f"🔍 Deep Enriching top {st.session_state.config.max_deep_fetches} candidates..."):
+                import concurrent.futures
+                
+                # Take top max_deep_fetches from llm_candidates
+                top_to_enrich = llm_candidates[:st.session_state.config.max_deep_fetches]
+                
+                def enrich(prod):
+                    provider.enrich_product(prod)
+                    
+                    # Logistics: Fast Shipping Logic
+                    if canonical.fast_shipping_requested and st.session_state.config.user_location != "Not Set":
+                        import random
+                        # Simulate warehouse locations (e.g., Delhi and Mumbai usually have major hubs)
+                        if st.session_state.config.user_location in ["Mumbai", "Delhi", "Bengaluru"]:
+                            # Higher chance of fast delivery in major hubs
+                            prod.shipping_days = random.choices([1, 2, 3], weights=[0.5, 0.3, 0.2])[0]
+                        else:
+                            # Standard delivery elsewhere
+                            prod.shipping_days = random.choices([2, 3, 4], weights=[0.2, 0.5, 0.3])[0]
+                        
+                        # We could also modify the Bayesian score here to prioritize faster items!
+                        # But for now, just tagging it is enough for the LLM to see.
+                        prod.specs["fast_delivery_available"] = (prod.shipping_days <= 2)
+                        
+                    return prod
+                    
+                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                    # Enriches in place
+                    list(executor.map(enrich, top_to_enrich))
+        
         extra_untested_products = raw_candidates[llm_eval_limit:]
 
         validated_products, evaluations = brain.evaluate_candidates(user_prompt, llm_candidates)
+        
+        # Build eval map for fast lookup
+        eval_map = {e.product_id: e for e in evaluations}
+        
+        # Sort validated products strictly by LLM match score (descending), then by Bayesian score
+        validated_products.sort(key=lambda p: (eval_map[p.id].match_score if p.id in eval_map else 0.0, bayesian_score(p)), reverse=True)
+        
         st.session_state.search_results = validated_products[:st.session_state.config.max_search_results]
         
         # Store ALL products that are NOT displayed in the top search_results
         displayed_ids = {p.id for p in st.session_state.search_results}
         st.session_state.rejected_products = [p for p in raw_candidates if p.id not in displayed_ids]
+        
+        # Sort rejected products so high QA scores appear first, followed by untested, followed by low QA scores
+        st.session_state.rejected_products.sort(
+            key=lambda p: (eval_map[p.id].match_score if p.id in eval_map else -0.1, bayesian_score(p)), 
+            reverse=True
+        )
         
         st.session_state.evaluations = evaluations
 
@@ -288,6 +380,13 @@ if st.session_state.search_results:
 
                 if member_price:
                     st.markdown(f"👑 **TriBe Member Price:** `{curr_sym}{member_price:.0f}`")
+                
+                # Rating and Reviews
+                st.markdown(f"⭐ **{prod.rating}** ({prod.review_count} reviews)")
+                
+                # Rich Description if enriched
+                if prod.rich_description:
+                    st.markdown(f"📝 *{prod.rich_description}*")
                 
                 st.markdown(f"**Fit & Fabric:** `{prod_fit}` | `{prod.specs.get('fabric', 'Cotton')}`")
                 

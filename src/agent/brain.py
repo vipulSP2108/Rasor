@@ -293,8 +293,9 @@ class AgentBrain:
             size=parsed_raw.size,
             max_price=parsed_raw.max_price,
             min_rating=parsed_raw.min_rating,
+            fast_shipping_requested=parsed_raw.fast_shipping_requested
         )
-        return canonical, "⚡ Normalized by Rule Engine"
+        return canonical, "⚙️ Normalized by Fallback Rules"
 
     # ── Stage 3: Candidate Relevance Evaluation ───────────────────────────────
 
@@ -321,17 +322,26 @@ class AgentBrain:
                 "subclass": p.specs.get("subclass"),
                 "fandom": p.specs.get("fandom_partner"),
                 "sizes_in_stock": p.specs.get("available_sizes"),
+                "rating": p.rating,
+                "review_count": p.review_count,
+                "rich_description": p.rich_description,
             }
             for p in candidates
         ]
 
         system = (
             "You are an e-commerce QA agent. The user requested a specific product. "
-            "For each candidate, decide if it matches the user's intent.\n"
-            "Reject a product if:\n"
-            "  - User asked for 'solid/plain' but product has 'Graphic Print' or 'Typography' design.\n"
-            "  - User asked for a specific category (e.g. t-shirt) but product is a different subclass.\n"
-            "  - User asked for a specific character (e.g. Iron Man) but product shows a different character.\n"
+            "For each candidate, decide if it matches the user's intent.\n\n"
+            "CRITICAL RULES FOR REJECTION:\n"
+            "  - Only reject if a product DIRECTLY CONTRADICTS an explicit user requirement.\n"
+            "  - Reject if user asked for 'solid'/'plain' but product has 'Graphic Print' or 'Typography'.\n"
+            "  - Reject if user asked for a specific category (e.g., jeans) but product is different (e.g., shorts).\n"
+            "  - Reject if user asked for a specific character/fandom (e.g., Iron Man) but product shows another.\n\n"
+            "CRITICAL RULES FOR ACCEPTANCE (DO NOT REJECT):\n"
+            "  - If the user's request is broad (e.g., 'black t-shirt'), ACCEPT products with additional features "
+            "(like Oversized fit, Graphic Print, Polo, Typography, V-neck, etc.) because the user did not explicitly forbid them.\n"
+            "  - DO NOT reject a 'Graphic Print' or 'Oversized' item just because the user didn't explicitly ask for it, "
+            "as long as it satisfies their broad keywords.\n\n"
             "Output ONLY this JSON:\n"
             "{\n"
             '  "evaluations": [\n'
