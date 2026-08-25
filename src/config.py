@@ -17,6 +17,7 @@ class ExecutionMode(str, Enum):
 class DataSourceType(str, Enum):
     DEV_MOCK = "dev_mock"
     BEWAKOOF_LIVE_API = "bewakoof_live_api"
+    SHOPIFY_STOREFRONT_LIVE_API = "shopify_storefront_live_api"
     GOOGLE_SHOPPING_SCRAPER = "google_shopping_scraper"
     SHOPIFY_STOREFRONT_API = "shopify_storefront_api"
     MCP_SERVER = "mcp_server"
@@ -68,3 +69,19 @@ class AgentConfig(BaseModel):
     currency: str = DEFAULT_CURRENCY
     allowed_merchants: List[str] = Field(default_factory=lambda: list(DEFAULT_ALLOWED_MERCHANTS))
     max_search_results: int = 5
+    
+    # Enrichment Settings
+    enable_deep_enrichment: bool = Field(
+        default=True,
+        description="If True, fetches single-product details for top candidates before LLM evaluation."
+    )
+    max_deep_fetches: int = Field(
+        default=10,
+        description="Maximum number of products to deeply enrich. Limits API calls."
+    )
+    
+    # Logistics Settings
+    user_location: str = Field(
+        default="Not Set",
+        description="User's current location (e.g., Mumbai, Delhi, New York) for fast shipping calculations."
+    )

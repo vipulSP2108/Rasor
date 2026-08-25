@@ -31,6 +31,6 @@ class BaseCatalogProvider(ABC):
         pass
 
     @abstractmethod
-    def get_product_details(self, product_id: str) -> Optional[Product]:
-        """Retrieve full details for a specific product ID."""
+    def enrich_product(self, product: Product) -> Product:
+        """Fetch deep details (reviews, rich descriptions) for an existing product."""
         pass

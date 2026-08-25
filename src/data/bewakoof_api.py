@@ -9,6 +9,7 @@ Uses:
 
 import os
 import re
+import time
 from typing import Any, Dict, List, Optional, Tuple
 import requests
 
@@ -214,6 +215,10 @@ class BewakoofCatalogProvider(BaseCatalogProvider):
                         for sub in allowed_subclasses
                     )
                 ]
+            else:
+                # Category is not supported in this generic handle (e.g., mobile covers in men-clothing).
+                # Empty the list to force a fallback to scraper or dev catalog.
+                all_products = []
 
         # 4b. Color filter
         if color and color.lower() != "any":
@@ -308,8 +313,15 @@ class BewakoofCatalogProvider(BaseCatalogProvider):
             if size: filters.append(f"Size:{size}")
             self.last_status_message = f"🟢 {len(all_products)} products [{' | '.join(filters)}] from handle '{handle}'"
         else:
-            # Relaxed fallback: return top trending items from same handle without attribute filters
-            trending = [self.mapper.map(r, query_terms) for r in raw_products[:limit] if self.mapper.map(r, query_terms)]
+            # If we cleared all_products because the category was completely unsupported in this handle, skip trending.
+            is_unsupported_category = needs_subclass_filter and category and not SUBCLASS_MAP.get(category.lower())
+            
+            if not is_unsupported_category:
+                # Relaxed fallback: return top trending items from same handle without attribute filters
+                trending = [self.mapper.map(r, query_terms) for r in raw_products[:limit] if self.mapper.map(r, query_terms)]
+            else:
+                trending = []
+                
             if trending:
                 self.last_status_message = f"ℹ️ Exact filters matched 0 items. Showing top trending from '{handle}'."
                 all_products = trending
@@ -322,5 +334,39 @@ class BewakoofCatalogProvider(BaseCatalogProvider):
         print(self.last_status_message)
         return all_products[:limit]
 
-    def get_product_details(self, product_id: str) -> Optional[Product]:
-        return self.fallback.get_product_details(product_id)
+    def enrich_product(self, product: Product) -> Product:
+        # Extract numeric id
+        pid = product.id.split("-")[-1] if "-" in product.id else product.id
+        url = f"{os.getenv('BEWAKOOF_API_BASE_URL', '')}{os.getenv('BEWAKOOF_PDP_ENDPOINT', '')}/{pid}"
+        
+        delay = 0.3
+        max_delay = 1.5
+        
+        while delay <= max_delay:
+            try:
+                resp = requests.get(url, headers=self._headers(), timeout=4)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    ratings = data.get("ratings")
+                    if ratings and isinstance(ratings, dict):
+                        product.rating = float(ratings.get("avg") or product.rating)
+                        product.review_count = int(ratings.get("count") or product.review_count)
+                    
+                    desc = data.get("description")
+                    if desc and isinstance(desc, dict):
+                        product.rich_description = desc.get("heading")
+                    product.enriched = True
+                    break
+                elif resp.status_code in (403, 429, 500, 502, 503, 504):
+                    print(f"[Bewakoof] Enrich {pid} got HTTP {resp.status_code}. Backing off {delay:.2f}s...")
+                    time.sleep(delay)
+                    delay *= 2  # 0.3s -> 0.6s -> 1.2s -> exceeds 1.5s
+                else:
+                    print(f"[Bewakoof] Enrich {pid} got HTTP {resp.status_code}. Proceeding.")
+                    break
+            except Exception as e:
+                print(f"[Bewakoof] Enrich failed for {pid}: {e}. Backing off {delay:.2f}s...")
+                time.sleep(delay)
+                delay *= 2
+                
+        return product

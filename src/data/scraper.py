@@ -212,5 +212,5 @@ class GoogleShoppingScraper(BaseCatalogProvider):
 
         return self.fallback.search_products(query, category, max_price, min_rating, merchant, limit)
 
-    def get_product_details(self, product_id: str) -> Optional[Product]:
-        return self.fallback.get_product_details(product_id)
+    def enrich_product(self, product: Product) -> Product:
+        return self.fallback.enrich_product(product)

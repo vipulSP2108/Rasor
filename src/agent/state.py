@@ -125,6 +125,7 @@ class CanonicalShoppingQuery(BaseModel):
     fabric: FabricEnum = Field(default=FabricEnum.ANY, description="Material fabric")
     neck: NeckEnum = Field(default=NeckEnum.ANY, description="Neckline style")
     fandom: FandomEnum = Field(default=FandomEnum.NONE, description="Specific IP or fandom")
+    fast_shipping_requested: bool = Field(default=False, description="True if user wants fast delivery")
     size: Optional[str] = Field(default=None, description="Explicit requested size (e.g. 'L', 'M', 'XL')")
     max_price: Optional[float] = Field(default=None, description="Hard budget cap extracted from text")
     min_rating: Optional[float] = Field(default=None, description="Minimum review rating requested")
@@ -153,6 +154,8 @@ class Product(BaseModel):
     source_url: Optional[str] = Field(default=None, description="Direct URL if scraped/API")
     specs: Dict[str, Any] = Field(default_factory=dict, description="Key-value specifications")
     discount_codes: List[str] = Field(default_factory=list, description="Applicable discount codes")
+    enriched: bool = Field(default=False, description="Whether single-product deep fetch has been done")
+    rich_description: Optional[str] = Field(default=None, description="Detailed product description from single endpoint")
 
 
 class ProductRelevanceEvaluation(BaseModel):

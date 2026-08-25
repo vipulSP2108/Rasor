@@ -70,6 +70,7 @@ class ParsedShoppingIntent(BaseModel):
     fandom: Optional[str] = Field(default=None, description="Merchandise partner / Pop-culture theme (Marvel, DC, Anime, Disney)")
     fit: Optional[str] = Field(default=None, description="Fit preference (Oversized Fit, Regular Fit, Boyfriend Fit)")
     sleeve: Optional[str] = Field(default=None, description="Sleeve type (Half Sleeve, Full Sleeve, Sleeveless)")
+    fast_shipping_requested: bool = Field(default=False, description="True if the user requested fast, express, or urgent delivery")
 
 
 def parse_user_intent(prompt: str) -> ParsedShoppingIntent:
@@ -152,12 +153,16 @@ def parse_user_intent(prompt: str) -> ParsedShoppingIntent:
         except ValueError:
             pass
 
-    # 11. Clean keyword query
+    # 11. Fast Shipping Extraction
+    fast_shipping_requested = bool(re.search(r"\b(fast|quick|urgent|express|rapid)\b", p_lower))
+
+    # 12. Clean keyword query
     stop_words = [
         "find", "me", "buy", "get", "search", "for", "in", "under", "below",
         "less", "than", "within", "size", "color", "rating", "star", "stars",
         "men", "women", "man", "woman", "boys", "girls", "plain", "solid",
-        "printed", "graphic", "typography", "oversized", "regular", "half", "sleeve"
+        "printed", "graphic", "typography", "oversized", "regular", "half", "sleeve",
+        "fast", "quick", "urgent", "express", "rapid"
     ]
     if color:
         stop_words.append(color.lower())
@@ -177,5 +182,6 @@ def parse_user_intent(prompt: str) -> ParsedShoppingIntent:
         design=design,
         fandom=fandom,
         fit=fit,
-        sleeve=sleeve
+        sleeve=sleeve,
+        fast_shipping_requested=fast_shipping_requested
     )
