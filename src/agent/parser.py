@@ -71,6 +71,7 @@ class ParsedShoppingIntent(BaseModel):
     fit: Optional[str] = Field(default=None, description="Fit preference (Oversized Fit, Regular Fit, Boyfriend Fit)")
     sleeve: Optional[str] = Field(default=None, description="Sleeve type (Half Sleeve, Full Sleeve, Sleeveless)")
     fast_shipping_requested: bool = Field(default=False, description="True if the user requested fast, express, or urgent delivery")
+    negative_keywords: List[str] = Field(default_factory=list, description="Keywords explicitly excluded by user")
 
 
 def parse_user_intent(prompt: str) -> ParsedShoppingIntent:
@@ -156,13 +157,20 @@ def parse_user_intent(prompt: str) -> ParsedShoppingIntent:
     # 11. Fast Shipping Extraction
     fast_shipping_requested = bool(re.search(r"\b(fast|quick|urgent|express|rapid|early|soon)\b", p_lower))
 
+    # 11.5 Negative Keywords Extraction
+    negative_keywords = []
+    neg_matches = re.findall(r"\b(?:not|no|without|except|non|minus)\s+([a-zA-Z0-9]+)\b", p_lower)
+    if neg_matches:
+        negative_keywords = list(set(neg_matches))
+
     # 12. Clean keyword query
     stop_words = [
         "find", "me", "buy", "get", "search", "for", "in", "under", "below",
         "less", "than", "within", "size", "color", "rating", "star", "stars",
         "men", "women", "man", "woman", "boys", "girls", "plain", "solid",
         "printed", "graphic", "typography", "oversized", "regular", "half", "sleeve",
-        "fast", "quick", "urgent", "express", "rapid"
+        "fast", "quick", "urgent", "express", "rapid",
+        "not", "no", "without", "except", "non", "minus"
     ]
     if color:
         stop_words.append(color.lower())
@@ -183,5 +191,6 @@ def parse_user_intent(prompt: str) -> ParsedShoppingIntent:
         fandom=fandom,
         fit=fit,
         sleeve=sleeve,
-        fast_shipping_requested=fast_shipping_requested
+        fast_shipping_requested=fast_shipping_requested,
+        negative_keywords=negative_keywords
     )
