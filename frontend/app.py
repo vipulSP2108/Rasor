@@ -251,19 +251,18 @@ if (search_clicked or not st.session_state.search_results) and user_prompt:
                 # Take top max_deep_fetches from llm_candidates
                 top_to_enrich = llm_candidates[:st.session_state.config.max_deep_fetches]
                 
+                # Extract session state variables before entering the thread pool
+                current_location = st.session_state.config.user_location
+                
                 def enrich(prod):
                     provider.enrich_product(prod)
                     
                     # Logistics: Fast Shipping Logic
-                    if canonical.fast_shipping_requested and st.session_state.config.user_location != "Not Set":
-                        import random
-                        # Simulate warehouse locations (e.g., Delhi and Mumbai usually have major hubs)
-                        if st.session_state.config.user_location in ["Mumbai", "Delhi", "Bengaluru"]:
-                            # Higher chance of fast delivery in major hubs
-                            prod.shipping_days = random.choices([1, 2, 3], weights=[0.5, 0.3, 0.2])[0]
-                        else:
-                            # Standard delivery elsewhere
-                            prod.shipping_days = random.choices([2, 3, 4], weights=[0.2, 0.5, 0.3])[0]
+                    if canonical.fast_shipping_requested and current_location != "Not Set":
+                        from src.data.logistics import calculate_shipping_days
+                        
+                        # Use accurate Geocoding & Haversine Distance API logic
+                        prod.shipping_days = calculate_shipping_days(current_location)
                         
                         # We could also modify the Bayesian score here to prioritize faster items!
                         # But for now, just tagging it is enough for the LLM to see.
@@ -384,10 +383,16 @@ if st.session_state.search_results:
                 # Rating and Reviews
                 st.markdown(f"⭐ **{prod.rating}** ({prod.review_count} reviews)")
                 
-                # Rich Description if enriched
+                # Rich Description if enriched (hide behind expander to save space)
                 if prod.rich_description:
-                    st.markdown(f"📝 *{prod.rich_description}*")
+                    with st.expander("📝 View Description"):
+                        st.markdown(prod.rich_description, unsafe_allow_html=True)
                 
+                # Shipping Logistics Display
+                if hasattr(prod, 'shipping_days') and prod.shipping_days:
+                    delivery_tag = "🚀 **Express Delivery**" if prod.shipping_days <= 2 else "🚚 **Standard Delivery**"
+                    st.markdown(f"{delivery_tag}: Arrives in `{prod.shipping_days} days`")
+
                 st.markdown(f"**Fit & Fabric:** `{prod_fit}` | `{prod.specs.get('fabric', 'Cotton')}`")
                 
                 # LLM QA Score Badge
