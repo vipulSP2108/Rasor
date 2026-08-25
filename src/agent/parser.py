@@ -64,6 +64,7 @@ class ParsedShoppingIntent(BaseModel):
     category: Optional[str] = Field(default=None, description="Primary product category")
     color: Optional[str] = Field(default=None, description="Target color variant")
     size: Optional[str] = Field(default=None, description="Requested garment or shoe size")
+    quantity: Optional[int] = Field(default=None, description="Quantity of items requested")
     max_price: Optional[float] = Field(default=None, description="Budget cap extracted from prompt")
     min_rating: Optional[float] = Field(default=None, description="Minimum review rating requested")
     design: Optional[str] = Field(default=None, description="Design pattern (Graphic Print, Typography, Solid, Washed)")
@@ -178,13 +179,26 @@ def parse_user_intent(prompt: str) -> ParsedShoppingIntent:
     words = [w for w in re.findall(r"\w+", p_lower) if w not in stop_words and not w.isdigit()]
     cleaned_query = " ".join(words) if words else (category or prompt)
 
+    # 13. Quantity Extraction
+    quantity = None
+    qty_match = re.search(r"\b(give me|i want|buy|order|add|get)\s+(\d+)\b", p_lower)
+    if qty_match:
+        quantity = int(qty_match.group(2))
+    elif re.search(r"\b(two)\b", p_lower):
+        quantity = 2
+    elif re.search(r"\b(three)\b", p_lower):
+        quantity = 3
+    elif re.search(r"\b(four)\b", p_lower):
+        quantity = 4
+
     return ParsedShoppingIntent(
         raw_prompt=prompt,
-        cleaned_query=cleaned_query,
+        cleaned_query=cleaned_query.strip(),
         gender=gender,
         category=category,
         color=color,
         size=size,
+        quantity=quantity,
         max_price=max_price,
         min_rating=min_rating,
         design=design,
