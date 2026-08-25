@@ -224,8 +224,9 @@ class AgentBrain:
             '  "sleeve": "Half Sleeve" | "Full Sleeve" | "Sleeveless" | "Any",\n'
             '  "fabric": "Cotton" | "Polyester" | "Blend" | "Fleece" | "Linen" | "Nylon" | "Any",\n'
             '  "neck": "Round Neck" | "V-Neck" | "Polo" | "Collar" | "Hood" | "Crew Neck" | "Any",\n'
-            '  "fandom": "Marvel" | "DC" | "Disney" | "Harry Potter" | "Anime / Cartoons" | "None",\n'
+            '  "fandom": string or "None",\n'
             '  "size": string or null (e.g. "L", "M", "XL", "2XL", "UK 9" for footwear),\n'
+            '  "quantity": integer (default 1),\n'
             '  "max_price": float or null,\n'
             '  "min_rating": float or null,\n'
             '  "fast_shipping_requested": boolean (true if user wants fast/early delivery, else false),\n'
@@ -296,6 +297,7 @@ class AgentBrain:
             neck=NeckEnum.ANY,
             fandom=safe_enum(FandomEnum, parsed_raw.fandom, FandomEnum.NONE),
             size=parsed_raw.size,
+            quantity=parsed_raw.quantity or 1,
             max_price=parsed_raw.max_price,
             min_rating=parsed_raw.min_rating,
             fast_shipping_requested=parsed_raw.fast_shipping_requested

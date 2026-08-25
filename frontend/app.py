@@ -15,10 +15,14 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 import importlib
 import src.config
+import src.agent.state
+import src.agent.parser
 import src.agent.brain
 import src.data.bewakoof_api
 import src.data.shopify_api
 importlib.reload(src.config)
+importlib.reload(src.agent.state)
+importlib.reload(src.agent.parser)
 importlib.reload(src.agent.brain)
 importlib.reload(src.data.bewakoof_api)
 importlib.reload(src.data.shopify_api)
@@ -61,6 +65,113 @@ if "canonical_query" not in st.session_state:
 
 if "evaluations" not in st.session_state:
     st.session_state.evaluations = []
+
+if "last_status" not in st.session_state:
+    st.session_state.last_status = "Waiting for search..."
+
+# Cart Tracking State
+if "shopify_cart_id" not in st.session_state:
+    st.session_state.shopify_cart_id = None
+if "shopify_checkout_url" not in st.session_state:
+    st.session_state.shopify_checkout_url = None
+if "cart_quantity" not in st.session_state:
+    st.session_state.cart_quantity = 0
+if "cart_total_cost" not in st.session_state:
+    st.session_state.cart_total_cost = 0.0
+if "items_in_cart" not in st.session_state or isinstance(st.session_state.items_in_cart, set):
+    st.session_state.items_in_cart = {}
+
+from src.data.shopify_cart import ShopifyCartProvider
+
+@st.dialog("🛒 Add to Cart & Configure")
+def add_to_cart_dialog(product):
+    st.markdown(f"### {product.title}")
+    
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        img_url = product.specs.get("image_url") or product.specs.get("display_image")
+        if img_url:
+            st.image(img_url, use_container_width=True)
+    
+    with col2:
+        if product.id in st.session_state.items_in_cart:
+            st.info(f"ℹ️ You already have {st.session_state.items_in_cart[product.id]} of this item in your cart.")
+            
+        curr_sym = "₹" if st.session_state.config.currency == "INR" else "$"
+        st.markdown(f"**Price:** {curr_sym}{product.price:.0f}")
+        
+        variant_ids = product.specs.get("variant_ids", {})
+        sizes = list(variant_ids.keys())
+        
+        if not sizes:
+            st.error("This product has no available variants to add to cart.")
+            if st.button("Close"):
+                st.rerun()
+            return
+
+        # Defaults from canonical query
+        cq = st.session_state.canonical_query
+        req_size = cq.size if cq else None
+        req_quantity = cq.quantity if cq else 1
+
+        default_size_idx = 0
+        if req_size:
+            # Try to find an exact or case-insensitive match for the requested size
+            try:
+                # First try exact match
+                default_size_idx = sizes.index(req_size)
+            except ValueError:
+                # Then try case-insensitive
+                lower_sizes = [s.lower() for s in sizes]
+                if req_size.lower() in lower_sizes:
+                    default_size_idx = lower_sizes.index(req_size.lower())
+                else:
+                    st.warning(f"⚠️ You asked for size '{req_size}', but it's not available. Please choose another.")
+
+        selected_size = st.selectbox("Select Size / Variant", options=sizes, index=default_size_idx)
+        quantity = st.number_input("Quantity", min_value=1, max_value=10, value=int(req_quantity))
+        
+        item_cost = product.price * quantity
+        new_cart_total = st.session_state.cart_total_cost + item_cost
+        
+        st.info(f"**Item Estimate:** {curr_sym}{item_cost:.0f} | **New Cart Total:** {curr_sym}{new_cart_total:.0f}")
+        
+        # Financial Guardrail Check
+        if new_cart_total > st.session_state.config.max_budget:
+            st.error(f"⚠️ Exceeds Hard Maximum Budget of {curr_sym}{st.session_state.config.max_budget:.0f}. Cannot proceed.")
+            can_add = False
+        elif new_cart_total > st.session_state.config.max_cost_hitl:
+            st.warning(f"⚠️ Exceeds HITL Approval Threshold ({curr_sym}{st.session_state.config.max_cost_hitl:.0f}). Requires manual confirmation.")
+            can_add = st.checkbox("I approve this high-value addition")
+        else:
+            can_add = True
+            
+        if st.button("Confirm Add to Cart", disabled=not can_add, use_container_width=True):
+            with st.spinner("Connecting to Shopify Cart API..."):
+                cart_provider = ShopifyCartProvider()
+                variant_gid = variant_ids[selected_size]
+                
+                if st.session_state.shopify_cart_id:
+                    res = cart_provider.add_to_cart(st.session_state.shopify_cart_id, variant_gid, quantity)
+                else:
+                    res = cart_provider.create_cart(variant_gid, quantity)
+                    
+                if res.get("success"):
+                    st.session_state.shopify_cart_id = res["cart_id"]
+                    st.session_state.shopify_checkout_url = res["checkout_url"]
+                    st.session_state.cart_quantity = res.get("total_quantity", 0)
+                    st.session_state.cart_total_cost = float(res.get("cost", 0.0))
+                    
+                    # Track quantity per product
+                    current_qty = st.session_state.items_in_cart.get(product.id, 0)
+                    st.session_state.items_in_cart[product.id] = current_qty + quantity
+                    
+                    st.success("✅ Added to cart successfully!")
+                    import time
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.error(f"Failed to add to cart: {res.get('errors')}")
 
 if "normalization_source" not in st.session_state:
     st.session_state.normalization_source = ""
@@ -175,7 +286,21 @@ with st.sidebar:
 # ------------------------------------------------------------------------------
 # 3. Main Interface & Natural Language Prompt
 # ------------------------------------------------------------------------------
-st.title("🛍️ Rasor: Autonomous Agentic Commerce")
+st.title("🛍️ Rasor Conversational Commerce")
+
+if st.session_state.cart_quantity > 0:
+    c_info, c_btn = st.columns([4, 1])
+    with c_info:
+        st.info(f"🛒 **Cart:** {st.session_state.cart_quantity} items added. [Checkout Now]({st.session_state.shopify_checkout_url})")
+    with c_btn:
+        if st.button("🗑️ Clear Cart", use_container_width=True):
+            st.session_state.shopify_cart_id = None
+            st.session_state.shopify_checkout_url = None
+            st.session_state.cart_quantity = 0
+            st.session_state.cart_total_cost = 0.0
+            st.session_state.items_in_cart = {}
+            st.rerun()
+
 st.caption(
     f"Active Mode: **{st.session_state.config.mode.value.upper()}** | "
     f"Data Provider: **{st.session_state.config.data_source.value}** | "
@@ -432,8 +557,18 @@ if st.session_state.search_results:
                 else:
                     st.success("✅ Within Autonomous Limit")
 
-                if prod.source_url:
-                    st.link_button("View on Store ↗", prod.source_url, use_container_width=True)
+                colX, colY = st.columns(2)
+                with colX:
+                    if prod.id in st.session_state.items_in_cart:
+                        btn_label = f"✅ {st.session_state.items_in_cart[prod.id]} In Cart - Add More"
+                    else:
+                        btn_label = "🛒 Add to Cart"
+                        
+                    if st.button(btn_label, key=f"add_{prod.id}", use_container_width=True):
+                        add_to_cart_dialog(prod)
+                with colY:
+                    if prod.source_url:
+                        st.link_button("View on Store ↗", prod.source_url, use_container_width=True)
 
     with st.expander("🔍 Inspect Raw Canonical Query & Evaluations"):
         st.json({
@@ -502,6 +637,13 @@ if "rejected_products" in st.session_state and st.session_state.rejected_product
                             else:
                                 st.caption("⚡ Not evaluated")
                             
+                            if prod.id in st.session_state.items_in_cart:
+                                btn_label_rej = f"✅ {st.session_state.items_in_cart[prod.id]} In Cart - Add More"
+                            else:
+                                btn_label_rej = "🛒 Add to Cart"
+                                
+                            if st.button(btn_label_rej, key=f"add_rej_{prod.id}", use_container_width=True):
+                                add_to_cart_dialog(prod)
                             if prod.source_url:
                                 st.link_button("View ↗", prod.source_url, use_container_width=True)
 

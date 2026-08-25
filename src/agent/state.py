@@ -127,6 +127,7 @@ class CanonicalShoppingQuery(BaseModel):
     fandom: FandomEnum = Field(default=FandomEnum.NONE, description="Specific IP or fandom")
     fast_shipping_requested: bool = Field(default=False, description="True if user wants fast delivery")
     size: Optional[str] = Field(default=None, description="Explicit requested size (e.g. 'L', 'M', 'XL')")
+    quantity: int = Field(default=1, description="Quantity of items requested")
     max_price: Optional[float] = Field(default=None, description="Hard budget cap extracted from text")
     min_rating: Optional[float] = Field(default=None, description="Minimum review rating requested")
     negative_keywords: List[str] = Field(default_factory=list, description="Keywords explicitly excluded by user")
