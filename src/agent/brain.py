@@ -227,7 +227,8 @@ class AgentBrain:
             '  "fandom": "Marvel" | "DC" | "Disney" | "Harry Potter" | "Anime / Cartoons" | "None",\n'
             '  "size": string or null (e.g. "L", "M", "XL", "2XL", "UK 9" for footwear),\n'
             '  "max_price": float or null,\n'
-            '  "min_rating": float or null\n'
+            '  "min_rating": float or null,\n'
+            '  "fast_shipping_requested": boolean (true if user wants fast/early delivery, else false)\n'
             "}\n\n"
             "RULES:\n"
             "- 'plain', 'solid', 'basic', 'no print' → design: 'Solid'\n"
@@ -243,6 +244,7 @@ class AgentBrain:
             "- 'slider', 'sandal', 'chappal', 'flip flop' → category: 'sliders'\n"
             "- 'full sleeve', 'long sleeve' → sleeve: 'Full Sleeve'\n"
             "- 'half sleeve', 'short sleeve' → sleeve: 'Half Sleeve'\n"
+            "- 'fast', 'quick', 'urgent', 'express', 'rapid', 'early', 'soon' → fast_shipping_requested: true\n"
             "- Output ONLY valid JSON. No markdown, no extra text."
         )
 
@@ -264,6 +266,7 @@ class AgentBrain:
                     data["fabric"] = data.get("fabric", "Any") if data.get("fabric") in [e.value for e in FabricEnum] else "Any"
                     data["neck"] = data.get("neck", "Any") if data.get("neck") in [e.value for e in NeckEnum] else "Any"
                     data["fandom"] = data.get("fandom", "None") if data.get("fandom") in [e.value for e in FandomEnum] else "None"
+                    data["fast_shipping_requested"] = data.get("fast_shipping_requested", False)
                     canonical = CanonicalShoppingQuery(**data)
                     return canonical, f"🧠 Normalized by {self.last_model_used}"
                 except Exception as e:

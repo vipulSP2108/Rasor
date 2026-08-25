@@ -154,7 +154,7 @@ def parse_user_intent(prompt: str) -> ParsedShoppingIntent:
             pass
 
     # 11. Fast Shipping Extraction
-    fast_shipping_requested = bool(re.search(r"\b(fast|quick|urgent|express|rapid)\b", p_lower))
+    fast_shipping_requested = bool(re.search(r"\b(fast|quick|urgent|express|rapid|early|soon)\b", p_lower))
 
     # 12. Clean keyword query
     stop_words = [

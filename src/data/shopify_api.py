@@ -97,11 +97,11 @@ class ShopifyCatalogProvider(BaseCatalogProvider):
     """
 
     def __init__(self):
-        self.domain = os.getenv("SHOPIFY_STORE_DOMAIN", "")
-        self.token = os.getenv("SHOPIFY_STOREFRONT_ACCESS_TOKEN", "")
+        self.domain = os.getenv("SHOPIFY_DOMAIN", "")
+        self.token = os.getenv("SHOPIFY_STOREFRONT_TOKEN", "")
 
         if not self.domain or not self.token:
-            print("[Shopify] WARNING: Missing SHOPIFY_STORE_DOMAIN or SHOPIFY_STOREFRONT_ACCESS_TOKEN in .env")
+            print("[Shopify] WARNING: Missing SHOPIFY_DOMAIN or SHOPIFY_STOREFRONT_TOKEN in .env")
 
         self.endpoint = f"https://{self.domain}/api/{SHOPIFY_API_VERSION}/graphql.json"
         self.headers = {
