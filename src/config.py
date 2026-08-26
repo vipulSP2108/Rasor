@@ -14,6 +14,12 @@ class ExecutionMode(str, Enum):
     LIVE = "live"     # Real-world data via Scraper, API, or MCP
 
 
+class UIMode(str, Enum):
+    STANDARD = "standard"  # Current one-shot input
+    CHAT = "chat"          # Conversational Stylist Agent
+    VOICE = "voice"        # Conversational + Speech-to-Text Input
+
+
 class DataSourceType(str, Enum):
     DEV_MOCK = "dev_mock"
     BEWAKOOF_LIVE_API = "bewakoof_live_api"
@@ -52,8 +58,9 @@ DEFAULT_ALLOWED_MERCHANTS: List[str] = [
 
 class AgentConfig(BaseModel):
     """Runtime configuration passed into the agent loop from the frontend."""
-    mode: ExecutionMode = ExecutionMode.DEV
-    data_source: DataSourceType = DataSourceType.DEV_MOCK
+    mode: ExecutionMode = Field(default=ExecutionMode.LIVE)
+    ui_mode: UIMode = Field(default=UIMode.CHAT, description="Frontend UX paradigm")
+    data_source: DataSourceType = Field(default=DataSourceType.GOOGLE_SHOPPING_SCRAPER)
     primary_model: str = "gemini-2.5-flash"
     fallback_model: str = "llama-3.3-70b-versatile"
     
@@ -78,6 +85,14 @@ class AgentConfig(BaseModel):
     max_deep_fetches: int = Field(
         default=10,
         description="Maximum number of products to deeply enrich. Limits API calls."
+    )
+    vqa_strict_filter: bool = Field(
+        default=False,
+        description="If True, VQA only scans products that perfectly match text constraints. If False, scans partial matches too."
+    )
+    enable_vqa_scanner: bool = Field(
+        default=True,
+        description="Master switch to enable or disable the VQA image scanner pipeline."
     )
     
     # Logistics Settings

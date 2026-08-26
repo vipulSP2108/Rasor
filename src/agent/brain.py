@@ -21,6 +21,7 @@ from src.agent.state import (
     FandomEnum,
     FitEnum,
     GenderEnum,
+    OccasionEnum,
     Product,
     ProductRelevanceEvaluation,
     SleeveEnum,
@@ -96,9 +97,36 @@ _SYNONYM_MAP: dict = {
     "tom and jerry": "tom and jerry", "tom & jerry": "tom and jerry",
 }
 
+_FANDOM_KNOWLEDGE_GRAPH: dict = {
+    # Marvel
+    "black panther": ["wakanda", "forever", "t'challa", "vibranium", "marvel"],
+    "panther": ["wakanda", "forever", "t'challa", "vibranium", "marvel"],
+    "spiderman": ["spider-man", "peter parker", "miles morales", "web", "marvel"],
+    "spider-man": ["spider", "peter parker", "miles morales", "web", "marvel"],
+    "ironman": ["iron man", "tony stark", "stark industries", "arc reactor", "marvel"],
+    "iron man": ["tony stark", "stark industries", "arc reactor", "marvel"],
+    "captain america": ["steve rogers", "shield", "first avenger", "marvel"],
+    "thor": ["mjolnir", "asgard", "god of thunder", "marvel"],
+    "deadpool": ["ryan reynolds", "marvel", "merc with a mouth"],
+    "wolverine": ["x-men", "logan", "mutant", "marvel"],
+    "venom": ["symbiote", "eddie brock", "marvel", "carnage"],
+    # DC
+    "batman": ["gotham", "dark knight", "bruce wayne", "joker", "dc"],
+    "superman": ["clark kent", "krypton", "man of steel", "dc"],
+    "wonder woman": ["diana prince", "amazon", "dc"],
+    "flash": ["barry allen", "speedster", "central city", "dc"],
+    # Anime
+    "naruto": ["hidden leaf", "hokage", "sasuke", "kakashi", "anime", "shinobi"],
+    "dragon ball": ["dbz", "goku", "vegeta", "saiyan", "anime"],
+    "dbz": ["dragon ball", "goku", "vegeta", "saiyan", "anime"],
+    "one piece": ["luffy", "straw hat", "zoro", "anime", "pirate"],
+    "attack on titan": ["aot", "eren", "levi", "survey corps", "anime"],
+    "jujutsu kaisen": ["jjk", "gojo", "itadori", "sukuna", "anime"],
+    "demon slayer": ["tanjiro", "nezuko", "zenitsu", "anime"],
+}
 
 def preprocess_prompt(prompt: str) -> str:
-    """Step 0: Normalize case, fix spelling, expand synonyms before LLM or rules."""
+    """Step 0: Normalize case, fix spelling, expand synonyms and knowledge graph before LLM or rules."""
     text = prompt.strip().lower()
     
     # Apply spell corrections (exact phrase matching)
@@ -108,9 +136,20 @@ def preprocess_prompt(prompt: str) -> str:
     # Apply synonym expansion (exact phrase matching)
     for synonym, canonical in _SYNONYM_MAP.items():
         text = re.sub(rf"\b{re.escape(synonym)}\b", canonical, text)
+        
+    # Apply Fandom Knowledge Graph Expansion (append related terms for wider search net)
+    expanded_terms = []
+    for entity, related_keywords in _FANDOM_KNOWLEDGE_GRAPH.items():
+        if re.search(rf"\b{re.escape(entity)}\b", text):
+            expanded_terms.extend(related_keywords)
+            
+    # Append unique expanded terms to the end of the text
+    if expanded_terms:
+        # Deduplicate and append
+        unique_terms = list(dict.fromkeys(expanded_terms))
+        text = text + " " + " ".join(unique_terms)
     
     return text
-
 
 # ---------------------------------------------------------------------------
 # 2. Agent Brain
@@ -155,6 +194,61 @@ class AgentBrain:
             print(f"[Brain/Gemini] HTTP {resp.status_code}: {resp.text[:150]}")
         except Exception as e:
             print(f"[Brain/Gemini] Error: {e}")
+        return None
+
+    def _call_gemini_vision(self, prompt: str, image_url: str) -> Optional[str]:
+        """Call Gemini Vision model to evaluate an image against a prompt."""
+        if not self.gemini_key:
+            return None
+        try:
+            # 1. Download image
+            import base64
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+            }
+            img_resp = requests.get(image_url, headers=headers, timeout=5)
+            if img_resp.status_code != 200:
+                print(f"[Brain/GeminiVision] Failed to download image {image_url} (HTTP {img_resp.status_code})")
+                return None
+            img_b64 = base64.b64encode(img_resp.content).decode("utf-8")
+            
+            # Determine mime type naively
+            mime_type = "image/jpeg"
+            if image_url.lower().endswith(".png"):
+                mime_type = "image/png"
+            elif image_url.lower().endswith(".webp"):
+                mime_type = "image/webp"
+
+            # 2. Call Gemini
+            url = (
+                f"https://generativelanguage.googleapis.com/v1beta/models/"
+                f"gemini-1.5-flash:generateContent?key={self.gemini_key}"
+            )
+            payload = {
+                "contents": [
+                    {
+                        "parts": [
+                            {"text": prompt},
+                            {
+                                "inlineData": {
+                                    "mimeType": mime_type,
+                                    "data": img_b64
+                                }
+                            }
+                        ]
+                    }
+                ],
+                "generationConfig": {"temperature": 0.1},
+            }
+            resp = requests.post(url, json=payload, timeout=12)
+            if resp.status_code == 200:
+                text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+                self.last_model_used = "Google gemini-1.5-flash (Vision)"
+                return text
+            print(f"[Brain/GeminiVision] HTTP {resp.status_code}: {resp.text[:150]}")
+        except Exception as e:
+            print(f"[Brain/GeminiVision] Error: {e}")
         return None
 
     def _call_groq(self, prompt: str, system: str) -> Optional[str]:
@@ -215,7 +309,8 @@ class AgentBrain:
             "You are a precision e-commerce intent extractor for an Indian fashion store (Bewakoof.com). "
             "Extract all shopping attributes from the user query into this exact JSON schema:\n"
             "{\n"
-            '  "cleaned_keywords": string (core product keywords, stripped of noise),\n'
+            '  "cleaned_keywords": string (core product keywords, stripped of noise and stripped of any highly specific visual descriptions),\n'
+            '  "specific_visual_intent": string or null (ONLY use this if the user provides a very long/detailed description of a specific graphic, print, or image they want on the shirt. If they just say something like "L Black Panther t-shirts", leave this null. If populated, EXCLUDE these words from cleaned_keywords),\n'
             '  "gender": "men" | "women" | "unisex" | "all",\n'
             '  "category": "t-shirt" | "hoodie" | "joggers" | "jeans" | "shirt" | "sliders" | "footwear" | "vest" | "electronics" | "general",\n'
             '  "color": "Black" | "Blue" | "White" | "Red" | "Green" | "Orange" | "Grey" | "Yellow" | "Maroon" | "Beige" | "Brown" | "Navy" | "Any",\n'
@@ -224,6 +319,7 @@ class AgentBrain:
             '  "sleeve": "Half Sleeve" | "Full Sleeve" | "Sleeveless" | "Any",\n'
             '  "fabric": "Cotton" | "Polyester" | "Blend" | "Fleece" | "Linen" | "Nylon" | "Any",\n'
             '  "neck": "Round Neck" | "V-Neck" | "Polo" | "Collar" | "Hood" | "Crew Neck" | "Any",\n'
+            '  "occasion": "Party" | "Gym" | "Casual" | "Office" | "Any",\n'
             '  "fandom": string or "None",\n'
             '  "size": string or null (e.g. "L", "M", "XL", "2XL", "UK 9" for footwear),\n'
             '  "quantity": integer (default 1),\n'
@@ -246,7 +342,12 @@ class AgentBrain:
             "- 'slider', 'sandal', 'chappal', 'flip flop' → category: 'sliders'\n"
             "- 'full sleeve', 'long sleeve' → sleeve: 'Full Sleeve'\n"
             "- 'half sleeve', 'short sleeve' → sleeve: 'Half Sleeve'\n"
+            "- 'club', 'party', 'clubbing', 'night out' → occasion: 'Party'\n"
+            "- 'gym', 'workout', 'active', 'sports' → occasion: 'Gym'\n"
+            "- 'casual', 'chill', 'street', 'everyday' → occasion: 'Casual'\n"
+            "- 'office', 'work', 'formal', 'meeting' → occasion: 'Office'\n"
             "- 'fast', 'quick', 'urgent', 'express', 'rapid', 'early', 'soon' → fast_shipping_requested: true\n"
+            "- IMPORTANT: If the user asks for 'batman with arms crossed and wearing a metal suit', cleaned_keywords = 'batman', specific_visual_intent = 'arms crossed and wearing a metal suit'.\n"
             "- Output ONLY valid JSON. No markdown, no extra text."
         )
 
@@ -268,6 +369,7 @@ class AgentBrain:
                     data["negative_keywords"] = data.get("negative_keywords", [])
                     data["fabric"] = data.get("fabric", "Any") if data.get("fabric") in [e.value for e in FabricEnum] else "Any"
                     data["neck"] = data.get("neck", "Any") if data.get("neck") in [e.value for e in NeckEnum] else "Any"
+                    data["occasion"] = data.get("occasion", "Any") if data.get("occasion") in [e.value for e in OccasionEnum] else "Any"
                     data["fandom"] = data.get("fandom", "None") if data.get("fandom") in [e.value for e in FandomEnum] else "None"
                     data["fast_shipping_requested"] = data.get("fast_shipping_requested", False)
                     canonical = CanonicalShoppingQuery(**data)
@@ -295,6 +397,7 @@ class AgentBrain:
             sleeve=safe_enum(SleeveEnum, parsed_raw.sleeve, SleeveEnum.ANY),
             fabric=FabricEnum.ANY, # fallback doesn't parse this yet
             neck=NeckEnum.ANY,
+            occasion=OccasionEnum.ANY,
             fandom=safe_enum(FandomEnum, parsed_raw.fandom, FandomEnum.NONE),
             size=parsed_raw.size,
             quantity=parsed_raw.quantity or 1,
@@ -311,6 +414,8 @@ class AgentBrain:
         user_prompt: str,
         candidates: List[Product],
         canonical: Optional["CanonicalShoppingQuery"] = None,
+        vqa_strict_filter: bool = False,
+        enable_vqa_scanner: bool = True
     ) -> Tuple[List[Product], List[ProductRelevanceEvaluation]]:
         """LLM QA: Verifies retrieved products against user intent. Rejects false positives.
 
@@ -344,6 +449,12 @@ class AgentBrain:
                 pos_signals.append(f"fandom={canonical.fandom.value}")
         if pos_signals:
             constraint_lines.append(f"POSITIVE REQUIREMENTS (must be present for a high match_score): {', '.join(pos_signals)}")
+
+        if canonical and canonical.specific_visual_intent:
+            constraint_lines.append(
+                "WARNING: A specific visual intent was provided. DO NOT reject products (score < 0.5) just because their text doesn't describe the exact visual details. "
+                "If the product matches the broader category/fandom, score it >= 0.5 so it survives to be visually scanned."
+            )
 
         constraint_block = "\n".join(constraint_lines) if constraint_lines else "No hard constraints beyond the user's prompt."
 
@@ -406,6 +517,62 @@ class AgentBrain:
             if data:
                 try:
                     eval_map = {e["product_id"]: e for e in data.get("evaluations", [])}
+
+                    # ---------------------------------------------------------
+                    # VQA Scanning Phase (if visual intent is provided)
+                    # ---------------------------------------------------------
+                    if enable_vqa_scanner and canonical and canonical.specific_visual_intent:
+                        print(f"[Brain] Executing Exhaustive VQA Scanning for: {canonical.specific_visual_intent}")
+                        vqa_prompt = (
+                            f"The user has a highly specific visual requirement for this clothing item: '{canonical.specific_visual_intent}'.\n"
+                            "Look closely at the design, graphic, and features of the product in the image.\n"
+                            "Respond with ONLY a JSON object in this format:\n"
+                            '{"is_visual_match": true|false, "visual_score": 0.0-1.0, "reason": "short explanation"}'
+                        )
+                        
+                        # Gather candidates for VQA scanning
+                        vqa_candidates = []
+                        for p in candidates:
+                            ev_data = eval_map.get(p.id)
+                            if not ev_data:
+                                continue
+                                
+                            if vqa_strict_filter:
+                                # Strict Mode: Only scan products that perfectly passed text evaluation
+                                if ev_data.get("is_relevant", True):
+                                    vqa_candidates.append(p)
+                            else:
+                                # Lenient Mode: Scan anything that isn't a hard rejection (>= 0.4)
+                                if float(ev_data.get("match_score", 0.0)) >= 0.4:
+                                    vqa_candidates.append(p)
+                        
+                        if not vqa_strict_filter:
+                            # Sort by text score to scan the most likely candidates first
+                            vqa_candidates.sort(key=lambda x: float(eval_map.get(x.id, {}).get("match_score", 0.0)), reverse=True)
+                        
+                        # Cap at 15 to avoid massive API delays
+                        vqa_candidates = vqa_candidates[:15]
+                        
+                        for p in vqa_candidates:
+                            img_url = p.specs.get("image_url") or p.specs.get("display_image")
+                            if img_url:
+                                vqa_raw = self._call_gemini_vision(vqa_prompt, img_url)
+                                vqa_data = self._extract_json(vqa_raw)
+                                if vqa_data:
+                                    ev_data = eval_map[p.id]
+                                    
+                                    # VQA trumps text relevance
+                                    is_vis = bool(vqa_data.get("is_visual_match", False))
+                                    ev_data["is_relevant"] = is_vis
+                                    
+                                    # Blend scores, favoring vision heavily (70/30)
+                                    text_score = float(ev_data.get("match_score", 0.5))
+                                    vis_score = float(vqa_data.get("visual_score", 0.0))
+                                    ev_data["match_score"] = (text_score * 0.3) + (vis_score * 0.7)
+                                    
+                                    vqa_reason = vqa_data.get("reason", "")
+                                    ev_data["reason"] = f"[VQA: {is_vis}] {vqa_reason}"
+                    
                     for p in candidates:
                         ev_data = eval_map.get(p.id)
                         if ev_data:
@@ -429,6 +596,9 @@ class AgentBrain:
                                 reason="Not evaluated — kept as neutral candidate",
                             ))
                             accepted.append(p)
+                    
+                    # Sort accepted by match score
+                    accepted.sort(key=lambda x: next((e.match_score for e in evaluations if e.product_id == x.id), 0), reverse=True)
                     return accepted, evaluations
                 except Exception as e:
                     print(f"[Brain/Eval] Error: {e}")

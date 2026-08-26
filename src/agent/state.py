@@ -17,6 +17,14 @@ class GenderEnum(str, Enum):
     ALL = "all"
 
 
+class OccasionEnum(str, Enum):
+    PARTY = "Party"
+    GYM = "Gym"
+    CASUAL = "Casual"
+    OFFICE = "Office"
+    ANY = "Any"
+
+
 class CategoryEnum(str, Enum):
     TSHIRT = "t-shirt"
     HOODIE = "hoodie"
@@ -124,7 +132,9 @@ class CanonicalShoppingQuery(BaseModel):
     sleeve: SleeveEnum = Field(default=SleeveEnum.ANY, description="Sleeve length")
     fabric: FabricEnum = Field(default=FabricEnum.ANY, description="Material fabric")
     neck: NeckEnum = Field(default=NeckEnum.ANY, description="Neckline style")
+    occasion: OccasionEnum = Field(default=OccasionEnum.ANY, description="Occasion or vibe for the outfit")
     fandom: FandomEnum = Field(default=FandomEnum.NONE, description="Specific IP or fandom")
+    specific_visual_intent: Optional[str] = Field(default=None, description="Verbose description of a specific graphic or visual element (e.g. 'arms crossed Wakanda salute')")
     fast_shipping_requested: bool = Field(default=False, description="True if user wants fast delivery")
     size: Optional[str] = Field(default=None, description="Explicit requested size (e.g. 'L', 'M', 'XL')")
     quantity: int = Field(default=1, description="Quantity of items requested")
