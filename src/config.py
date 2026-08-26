@@ -98,6 +98,10 @@ class AgentConfig(BaseModel):
         default=True,
         description="If True, instructs the LLM to prioritize the Product Title over contradicting backend specs."
     )
+    enable_offer_engine: bool = Field(
+        default=True,
+        description="If True, evaluates the Cart against active merchant offers to show proactive upsells."
+    )
     
     # Logistics Settings
     user_location: str = Field(
