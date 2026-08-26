@@ -19,6 +19,7 @@ import src.agent.state
 import src.agent.parser
 import src.agent.brain
 import src.agent.stylist
+import src.agent.offers
 import src.data.bewakoof_api
 import src.data.shopify_api
 importlib.reload(src.config)
@@ -26,6 +27,7 @@ importlib.reload(src.agent.state)
 importlib.reload(src.agent.parser)
 importlib.reload(src.agent.brain)
 importlib.reload(src.agent.stylist)
+importlib.reload(src.agent.offers)
 importlib.reload(src.data.bewakoof_api)
 importlib.reload(src.data.shopify_api)
 
@@ -38,6 +40,13 @@ from src.config import (
 from src.agent.stylist import StylistAgent
 from src.agent.state import CanonicalShoppingQuery, ProductRelevanceEvaluation
 from src.agent.brain import AgentBrain
+from src.agent.offers import OfferEngine
+import importlib
+import src.data.constants
+import src.agent.recommender
+importlib.reload(src.data.constants)
+importlib.reload(src.agent.recommender)
+from src.agent.recommender import RecommenderAgent
 from src.data.dev_catalog import DevCatalogProvider
 from src.data.scraper import GoogleShoppingScraper
 from src.data.bewakoof_api import BewakoofCatalogProvider
@@ -66,7 +75,7 @@ st.set_page_config(
 # 1. State Management (Decoupled Session State)
 # ------------------------------------------------------------------------------
 # Hotfix for backward compatibility with active session state (Pydantic blocks dynamic field assignment)
-if "config" in st.session_state and not hasattr(st.session_state.config, 'truth_hierarchy'):
+if "config" in st.session_state and (not hasattr(st.session_state.config, 'truth_hierarchy') or not hasattr(st.session_state.config, 'enable_offer_engine')):
     del st.session_state["config"]
 
 if "config" not in st.session_state:
@@ -182,6 +191,182 @@ def compare_products_dialog():
     if st.button("Clear Comparison List", use_container_width=True):
         st.session_state.compare_list = {}
         st.rerun()
+@st.dialog("🛒 Your Cart", width="large")
+def cart_page_dialog():
+    if not st.session_state.items_in_cart:
+        st.info("Your cart is empty.")
+        return
+        
+    curr_sym = "₹" if st.session_state.config.currency == "INR" else "$"
+    
+    # Lookup product titles from memory
+    prod_lookup = {}
+    if "multi_search_results" in st.session_state:
+        for res in st.session_state.multi_search_results:
+            for p in res.get("search_results", []):
+                prod_lookup[p.id] = p
+                
+    if "recommended_products_cache" in st.session_state:
+        prod_lookup.update(st.session_state.recommended_products_cache)
+                
+    st.markdown("### Cart Items")
+    raw_total_cost = 0.0
+    
+    for cart_pid, cart_qty in list(st.session_state.items_in_cart.items()):
+        cart_p = prod_lookup.get(cart_pid)
+        title = cart_p.title if cart_p else f"Item #{cart_pid[:6]}..."
+        price_str = f"{curr_sym}{cart_p.price:.0f}" if cart_p else "N/A"
+        if cart_p:
+            raw_total_cost += (cart_p.price * cart_qty)
+        
+        st.markdown(f"<div style='font-size: 1.0em; font-weight: 500; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;'>{title}</div>", unsafe_allow_html=True)
+        
+        c_price, c_qty, c_rem = st.columns([2.5, 4, 1.5])
+        with c_price:
+            st.markdown(f"<div style='padding-top: 8px; color: #94a3b8; font-size: 0.9em;'>{price_str}</div>", unsafe_allow_html=True)
+        with c_qty:
+            new_q = st.number_input("Qty", min_value=1, max_value=99, value=cart_qty, key=f"cart_q_{cart_pid}", label_visibility="collapsed")
+            if new_q != cart_qty:
+                diff = new_q - cart_qty
+                st.session_state.items_in_cart[cart_pid] = new_q
+                if cart_p:
+                    st.session_state.cart_total_cost = max(0.0, st.session_state.cart_total_cost + (cart_p.price * diff))
+                st.session_state.cart_quantity = max(0, st.session_state.cart_quantity + diff)
+                st.rerun()
+        with c_rem:
+            if st.button("❌", key=f"cart_rem_{cart_pid}", help="Remove"):
+                del st.session_state.items_in_cart[cart_pid]
+                if cart_p:
+                    st.session_state.cart_total_cost = max(0.0, st.session_state.cart_total_cost - (cart_p.price * cart_qty))
+                else:
+                    st.session_state.cart_total_cost = 0.0
+                st.session_state.cart_quantity = sum(st.session_state.items_in_cart.values())
+                if st.session_state.cart_quantity == 0:
+                    st.session_state.shopify_cart_id = None
+                st.rerun()
+        st.divider()
+
+    final_total = raw_total_cost
+    
+    # Offer Engine Evaluation
+    if st.session_state.config.enable_offer_engine:
+        evaluations = OfferEngine.evaluate_cart(st.session_state.items_in_cart, prod_lookup, curr_sym)
+        if evaluations:
+            st.markdown("### 🎁 Active Offers & Savings")
+            for eval in evaluations:
+                if eval.is_unlocked:
+                    st.success(eval.success_message)
+                    final_total -= eval.estimated_savings
+                else:
+                    st.warning(eval.upsell_message)
+                    
+                    if st.session_state.config.data_source == DataSourceType.GOOGLE_SHOPPING_SCRAPER:
+                        provider = GoogleShoppingScraper()
+                    elif st.session_state.config.data_source == DataSourceType.BEWAKOOF_LIVE_API:
+                        provider = BewakoofCatalogProvider()
+                    elif st.session_state.config.data_source in [DataSourceType.SHOPIFY_STOREFRONT_LIVE_API, DataSourceType.SHOPIFY_STOREFRONT_API]:
+                        provider = ShopifyCatalogProvider()
+                    else:
+                        provider = DevCatalogProvider()
+                    
+                    # Recommendation Engine
+                    recommender = RecommenderAgent(provider)
+                    
+                    if eval.offer.offer_type == "bulk_fixed_price":
+                        recs = recommender.get_fast_bundle_recs(eval.offer, st.session_state.items_in_cart)
+                        if recs:
+                            st.caption("✨ **Items in this Offer (Fast Add)**")
+                            r_cols = st.columns(len(recs))
+                            for i, rec_p in enumerate(recs):
+                                with r_cols[i]:
+                                    img_url = rec_p.specs.get("image_url") or rec_p.specs.get("display_image") or "https://via.placeholder.com/400x500"
+                                    st.image(img_url, use_container_width=True)
+                                    st.markdown(f"<div style='font-size: 0.8em; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;'>{rec_p.title}</div>", unsafe_allow_html=True)
+                                    st.markdown(f"<div style='font-size: 0.8em; font-weight: bold;'>{curr_sym}{rec_p.price:.0f}</div>", unsafe_allow_html=True)
+                                    if st.button("Add +", key=f"rec_add_{rec_p.id}", use_container_width=True, help="Add to Cart"):
+                                        if "recommended_products_cache" not in st.session_state:
+                                            st.session_state.recommended_products_cache = {}
+                                        st.session_state.recommended_products_cache[rec_p.id] = rec_p
+                                        
+                                        st.session_state.items_in_cart[rec_p.id] = st.session_state.items_in_cart.get(rec_p.id, 0) + 1
+                                        st.session_state.cart_total_cost += rec_p.price
+                                        st.session_state.cart_quantity += 1
+                                        st.rerun()
+                                        
+                    elif eval.offer.offer_type == "spend_threshold_percent":
+                        with st.spinner("Finding perfect matches to unlock your reward..."):
+                            recs_dict = recommender.get_smart_complementary_recs(st.session_state.items_in_cart, prod_lookup, eval.amount_away)
+                        
+                        same_recs = recs_dict.get("same_category", [])
+                        comp_recs = recs_dict.get("complementary_category", [])
+                        
+                        if same_recs:
+                            st.caption("✨ **More Like This**")
+                            s_cols = st.columns(len(same_recs))
+                            for i, rec_p in enumerate(same_recs):
+                                with s_cols[i]:
+                                    img_url = rec_p.specs.get("image_url") or rec_p.specs.get("display_image") or "https://via.placeholder.com/400x500"
+                                    st.image(img_url, use_container_width=True)
+                                    st.markdown(f"<div style='font-size: 0.8em; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;'>{rec_p.title}</div>", unsafe_allow_html=True)
+                                    st.markdown(f"<div style='font-size: 0.8em; font-weight: bold;'>{curr_sym}{rec_p.price:.0f}</div>", unsafe_allow_html=True)
+                                    if st.button("Add +", key=f"rec_add_same_{rec_p.id}", use_container_width=True, help="Add to Cart"):
+                                        if "recommended_products_cache" not in st.session_state:
+                                            st.session_state.recommended_products_cache = {}
+                                        st.session_state.recommended_products_cache[rec_p.id] = rec_p
+                                        
+                                        st.session_state.items_in_cart[rec_p.id] = st.session_state.items_in_cart.get(rec_p.id, 0) + 1
+                                        st.session_state.cart_total_cost += rec_p.price
+                                        st.session_state.cart_quantity += 1
+                                        st.rerun()
+                        
+                        if comp_recs:
+                            st.caption("✨ **Perfect Matches to Unlock Your Reward**")
+                            c_cols = st.columns(len(comp_recs))
+                            for i, rec_p in enumerate(comp_recs):
+                                with c_cols[i]:
+                                    img_url = rec_p.specs.get("image_url") or rec_p.specs.get("display_image") or "https://via.placeholder.com/400x500"
+                                    st.image(img_url, use_container_width=True)
+                                    st.markdown(f"<div style='font-size: 0.8em; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;'>{rec_p.title}</div>", unsafe_allow_html=True)
+                                    st.markdown(f"<div style='font-size: 0.8em; font-weight: bold;'>{curr_sym}{rec_p.price:.0f}</div>", unsafe_allow_html=True)
+                                    if st.button("Add +", key=f"rec_add_comp_{rec_p.id}", use_container_width=True, help="Add to Cart"):
+                                        if "recommended_products_cache" not in st.session_state:
+                                            st.session_state.recommended_products_cache = {}
+                                        st.session_state.recommended_products_cache[rec_p.id] = rec_p
+                                        
+                                        st.session_state.items_in_cart[rec_p.id] = st.session_state.items_in_cart.get(rec_p.id, 0) + 1
+                                        st.session_state.cart_total_cost += rec_p.price
+                                        st.session_state.cart_quantity += 1
+                                        st.rerun()
+                    
+            if final_total < 0:
+                final_total = 0.0
+                
+    st.markdown(f"""
+    <div style="background-color: rgba(30, 41, 59, 0.5); border-radius: 12px; padding: 16px; margin-top: 16px; margin-bottom: 16px; border: 1px solid rgba(255,255,255,0.1);">
+        <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+            <span style="color: #94a3b8; font-size: 0.9em;">Raw Total:</span>
+            <span style="font-weight: 500;">{curr_sym}{raw_total_cost:.0f}</span>
+        </div>
+        <div style="display: flex; justify-content: space-between; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 8px;">
+            <span style="color: #f8fafc; font-weight: 600;">Estimated Total (After Savings):</span>
+            <span style="color: #10b981; font-weight: 700; font-size: 1.1em;">{curr_sym}{final_total:.0f}</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    colA, colB = st.columns([1, 1])
+    with colA:
+        if st.button("🗑️ Empty Cart", use_container_width=True):
+            st.session_state.shopify_cart_id = None
+            st.session_state.cart_quantity = 0
+            st.session_state.cart_total_cost = 0.0
+            st.session_state.items_in_cart = {}
+            st.rerun()
+    with colB:
+        if st.session_state.shopify_checkout_url:
+            st.link_button("Proceed to Checkout", url=st.session_state.shopify_checkout_url, type="primary", use_container_width=True)
+        else:
+            st.button("Proceed to Checkout (Syncing...)", type="primary", use_container_width=True, disabled=True)
 
 @st.dialog("🛒 Add to Cart")
 def add_to_cart_dialog(product):
@@ -256,73 +441,6 @@ def add_to_cart_dialog(product):
         
     # --- Full Width Section (Below Image) ---
     new_cart_total = st.session_state.cart_total_cost + item_cost
-    
-    with st.expander(f"🛒 **New Cart Total:** {curr_sym}{new_cart_total:.0f}", expanded=False):
-        st.markdown(f"""
-        <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
-            <span style="color: #94a3b8;">Current Cart ({st.session_state.cart_quantity} items):</span>
-            <span>{curr_sym}{st.session_state.cart_total_cost:.0f}</span>
-        </div>
-        <div style="display: flex; justify-content: space-between; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px; margin-bottom: 8px;">
-            <span style="color: #94a3b8;">This Addition:</span>
-            <span style="color: #10b981;">+{curr_sym}{item_cost:.0f}</span>
-        </div>
-        <div style="display: flex; justify-content: space-between; font-weight: bold;">
-            <span>New Total:</span>
-            <span style="color: #10b981;">{curr_sym}{new_cart_total:.0f}</span>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        if st.session_state.cart_quantity > 0:
-            st.divider()
-            st.markdown("<div style='margin-bottom: 8px; font-weight: 600; color: #94a3b8; font-size: 0.85em; text-transform: uppercase;'>Currently in Cart:</div>", unsafe_allow_html=True)
-            
-            # Lookup product titles from memory
-            prod_lookup = {}
-            if "multi_search_results" in st.session_state:
-                for res in st.session_state.multi_search_results:
-                    for p in res.get("search_results", []):
-                        prod_lookup[p.id] = p
-                        
-            for cart_pid, cart_qty in list(st.session_state.items_in_cart.items()):
-                cart_p = prod_lookup.get(cart_pid)
-                title = cart_p.title if cart_p else f"Item #{cart_pid[:6]}..."
-                
-                price_str = f"{curr_sym}{cart_p.price:.0f}" if cart_p else "N/A"
-                
-                st.markdown(f"<div style='font-size: 0.9em; font-weight: 500; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;'>{title}</div>", unsafe_allow_html=True)
-                
-                c_price, c_qty, c_rem = st.columns([2.5, 4, 1.5])
-                with c_price:
-                    st.markdown(f"<div style='padding-top: 8px; color: #94a3b8; font-size: 0.9em;'>{price_str}</div>", unsafe_allow_html=True)
-                with c_qty:
-                    new_q = st.number_input("Qty", min_value=1, max_value=99, value=cart_qty, key=f"q_{cart_pid}", label_visibility="collapsed")
-                    if new_q != cart_qty:
-                        diff = new_q - cart_qty
-                        st.session_state.items_in_cart[cart_pid] = new_q
-                        if cart_p:
-                            st.session_state.cart_total_cost = max(0.0, st.session_state.cart_total_cost + (cart_p.price * diff))
-                        st.session_state.cart_quantity = max(0, st.session_state.cart_quantity + diff)
-                        st.rerun()
-                with c_rem:
-                    if st.button("❌", key=f"rem_{cart_pid}", help="Remove"):
-                        del st.session_state.items_in_cart[cart_pid]
-                        if cart_p:
-                            st.session_state.cart_total_cost = max(0.0, st.session_state.cart_total_cost - (cart_p.price * cart_qty))
-                        else:
-                            st.session_state.cart_total_cost = 0.0 # Safety fallback
-                        st.session_state.cart_quantity = sum(st.session_state.items_in_cart.values())
-                        if st.session_state.cart_quantity == 0:
-                            st.session_state.shopify_cart_id = None
-                        st.rerun()
-                        
-            st.divider()
-            if st.button("🗑️ Empty Entire Cart", use_container_width=True):
-                st.session_state.shopify_cart_id = None
-                st.session_state.cart_quantity = 0
-                st.session_state.cart_total_cost = 0.0
-                st.session_state.items_in_cart = {}
-                st.rerun()
     
     # Financial Guardrail Check
     if new_cart_total > st.session_state.config.max_budget:
@@ -571,6 +689,12 @@ with st.sidebar:
         help="Prioritizes the Product Title over contradicting backend specs to prevent false rejections (e.g., when a title says 'Polo' but specs incorrectly say 'Round Neck')."
     )
 
+    st.session_state.config.enable_offer_engine = st.toggle(
+        "Enable Neutral Offer Engine",
+        value=st.session_state.config.enable_offer_engine,
+        help="If enabled, dynamically evaluates active cart items against neutral merchant offers and alerts users of savings."
+    )
+
     st.divider()
     st.subheader("🚚 Shipping & Logistics")
     st.session_state.config.user_location = st.selectbox(
@@ -599,9 +723,12 @@ with st.sidebar:
 st.title("🛍️ Rasor Conversational Commerce")
 
 if st.session_state.cart_quantity > 0:
-    c_info, c_btn = st.columns([4, 1])
+    c_info, c_view, c_btn = st.columns([2.5, 1, 1])
     with c_info:
-        st.info(f"🛒 **Cart:** {st.session_state.cart_quantity} items added. [Checkout Now]({st.session_state.shopify_checkout_url})")
+        st.info(f"🛒 **Cart:** {st.session_state.cart_quantity} items added.")
+    with c_view:
+        if st.button("🛒 View Cart", type="primary", use_container_width=True):
+            cart_page_dialog()
     with c_btn:
         if st.button("🗑️ Clear Cart", use_container_width=True):
             st.session_state.shopify_cart_id = None
