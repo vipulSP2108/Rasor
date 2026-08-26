@@ -43,6 +43,19 @@ from src.data.scraper import GoogleShoppingScraper
 from src.data.bewakoof_api import BewakoofCatalogProvider
 from src.data.shopify_api import ShopifyCatalogProvider
 
+@st.cache_resource
+def get_kokoro_model():
+    """Cache the ONNX TTS model in memory globally so it doesn't reload on every interaction."""
+    model_path = "src/models/kokoro/kokoro-v0_19.onnx"
+    voices_path = "src/models/kokoro/voices.bin"
+    if os.path.exists(model_path) and os.path.exists(voices_path):
+        try:
+            from kokoro_onnx import Kokoro
+            return Kokoro(model_path, voices_path)
+        except ImportError:
+            return None
+    return None
+
 st.set_page_config(
     page_title="Rasor — Agentic Commerce",
     page_icon="🛍️",
@@ -90,6 +103,9 @@ if "messages" not in st.session_state:
 
 if "chat_ready_for_search" not in st.session_state:
     st.session_state.chat_ready_for_search = False
+
+if "current_user_prompt" not in st.session_state:
+    st.session_state.current_user_prompt = None
 
 if "stylist_agent" not in st.session_state:
     st.session_state.stylist_agent = StylistAgent()
@@ -216,6 +232,25 @@ st.markdown("""
     -ms-overflow-style: none;
     scrollbar-width: none;
 }
+/* Chat Bubble Styling */
+[data-testid="chatAvatarIcon-user"] {
+    background-color: #059669;
+}
+[data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) {
+    background-color: rgba(5, 150, 105, 0.1);
+    border-radius: 12px;
+    padding: 10px;
+    margin-bottom: 10px;
+}
+[data-testid="chatAvatarIcon-assistant"] {
+    background-color: #6366f1;
+}
+[data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-assistant"]) {
+    background-color: rgba(99, 102, 241, 0.1);
+    border-radius: 12px;
+    padding: 10px;
+    margin-bottom: 10px;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -238,6 +273,14 @@ with st.sidebar:
         st.session_state.config.ui_mode = UIMode.STANDARD
     else:
         st.session_state.config.ui_mode = UIMode.VOICE
+        
+    if st.session_state.config.ui_mode in (UIMode.CHAT, UIMode.VOICE):
+        st.session_state.tts_engine = st.selectbox(
+            "🗣️ Voice Options",
+            options=["System Native (Fast)", "Kokoro Python Repo (Local)", "Kokoro-82M (High Quality)", "Web Speech API (Browser Native)"],
+            index=0,
+            help="Select the Text-to-Speech engine used for Voice Mode."
+        )
 
     st.divider()
     
@@ -373,6 +416,15 @@ st.caption(
     f"Budget: **{curr_sym}{st.session_state.config.max_budget:.2f}**"
 )
 
+# Display Status Banner
+if "last_status" in st.session_state and st.session_state.last_status:
+    if "FALLBACK TRIGGERED" in st.session_state.last_status:
+        st.warning(f"**Data Pipeline Notification:**\n\n{st.session_state.last_status}")
+    else:
+        st.success(f"**Data Source Status:** {st.session_state.last_status}")
+
+search_clicked = False
+
 if st.session_state.config.ui_mode == UIMode.STANDARD:
     # ------------------------------------------------------------------------------
     # 3. Standard Interface (One-Shot)
@@ -398,23 +450,39 @@ elif st.session_state.config.ui_mode == UIMode.CHAT:
     # ------------------------------------------------------------------------------
     # 3. Chat Interface (Stylist Agent)
     # ------------------------------------------------------------------------------
-    if "current_user_prompt" not in st.session_state:
-        st.session_state.current_user_prompt = None
-        
-    for msg in st.session_state.messages:
+    if "pending_user_input" not in st.session_state:
+        st.session_state.pending_user_input = None
+
+    for i, msg in enumerate(st.session_state.messages):
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
             
-    if prompt := st.chat_input("What are you looking for today?"):
-        st.session_state.messages.append({"role": "user", "content": prompt})
+            # If it's the very last message in the list and from the assistant, render chips
+            if i == len(st.session_state.messages) - 1 and msg["role"] == "assistant" and msg.get("suggested_options"):
+                cols = st.columns(len(msg["suggested_options"]) + 1)
+                for idx, opt in enumerate(msg["suggested_options"]):
+                    with cols[idx]:
+                        if st.button(opt, key=f"chip_{i}_{idx}", use_container_width=True):
+                            st.session_state.pending_user_input = opt
+                            st.rerun()
+            
+    prompt = st.chat_input("What are you looking for today?")
+    if prompt:
+        st.session_state.pending_user_input = prompt
+        
+    if st.session_state.pending_user_input:
+        user_text = st.session_state.pending_user_input
+        st.session_state.pending_user_input = None
+        
+        st.session_state.messages.append({"role": "user", "content": user_text})
         with st.chat_message("user"):
-            st.markdown(prompt)
+            st.markdown(user_text)
             
         with st.chat_message("assistant"):
             with st.spinner("Stylist is thinking..."):
-                response = st.session_state.stylist_agent.process_turn(prompt, st.session_state.messages[:-1])
+                response = st.session_state.stylist_agent.process_turn(user_text, st.session_state.messages[:-1])
                 st.markdown(response.message)
-                st.session_state.messages.append({"role": "assistant", "content": response.message})
+                st.session_state.messages.append({"role": "assistant", "content": response.message, "suggested_options": response.suggested_options})
                 
                 if response.ready_for_search:
                     st.session_state.current_user_prompt = response.updated_query
@@ -431,10 +499,180 @@ elif st.session_state.config.ui_mode == UIMode.CHAT:
                     
     user_prompt = st.session_state.current_user_prompt
 
-else:
-    st.info("🎤 Voice UI is currently under construction. Please use Chat or Standard mode.")
-    user_prompt = None
+elif st.session_state.config.ui_mode == UIMode.VOICE:
+    if "current_user_prompt" not in st.session_state:
+        st.session_state.current_user_prompt = None
+        
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+            
+    import streamlit.components.v1 as components
+    
+    # Declare the custom VAD component
+    try:
+        vad_mic = components.declare_component("vad_mic", path="frontend/components/vad_mic")
+    except Exception as e:
+        st.error(f"Could not load custom component: {e}")
+        vad_mic = None
+        
+    # Inject CSS to make the VAD component float at the bottom above the chat input
+    st.markdown("""
+        <style>
+        iframe[title="frontend.components.vad_mic.vad_mic"] {
+            position: fixed;
+            bottom: 85px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 999999;
+            width: 300px !important;
+            height: 70px !important;
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.1);
+            background-color: rgba(30, 30, 30, 0.95);
+            backdrop-filter: blur(10px);
+            box-shadow: 0px 10px 30px rgba(0,0,0,0.5);
+        }
+        </style>
+    """, unsafe_allow_html=True)
+    
+    # Play queued TTS audio from the previous run
+    if "tts_audio_bytes" in st.session_state:
+        st.audio(st.session_state.tts_audio_bytes, format="audio/wav", autoplay=True)
+        del st.session_state.tts_audio_bytes
+        
+    tts_wait_ms = st.session_state.get("tts_wait_ms", 0)
+    if tts_wait_ms > 0:
+        st.session_state.tts_wait_ms = 0
+        
+    force_stop_mic = st.session_state.get("force_stop_mic", False)
+    if force_stop_mic:
+        st.session_state.force_stop_mic = False
+        
+    vad_state = vad_mic(wait_ms=tts_wait_ms, force_stop=force_stop_mic, key="vad_mic") if vad_mic else None
+    prompt = st.chat_input("Or type here...")
+    
+    new_prompt = None
+    if vad_state and vad_state.get("audio"):
+        import base64
+        import tempfile
+        import os
+        
+        audio_data = base64.b64decode(vad_state["audio"])
+        current_audio_hash = hash(audio_data)
+        
+        if st.session_state.get("last_audio_hash") != current_audio_hash:
+            st.session_state.last_audio_hash = current_audio_hash
+            with st.spinner("Local STT active..."):
+                try:
+                    with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as f:
+                        f.write(audio_data)
+                        tmp_path = f.name
+                        
+                    try:
+                        import whisper
+                        model = whisper.load_model("tiny.en")
+                        result = model.transcribe(tmp_path)
+                        new_prompt = result["text"].strip()
+                    except ImportError:
+                        st.error("OpenAI Whisper is not installed locally. Please run `pip install openai-whisper` on your Mac.")
+                        new_prompt = "Looking for a black t-shirt" # Fallback
+                    finally:
+                        try: os.remove(tmp_path)
+                        except: pass
+                except Exception as e:
+                    st.error(f"STT failed: {e}")
+                    
+    if prompt:
+        new_prompt = prompt
+        
     search_clicked = False
+    
+    # Render TTS for the very first greeting if it hasn't been played
+    if "greeting_played" not in st.session_state and len(st.session_state.messages) > 0:
+        st.session_state.greeting_played = True
+        greeting_msg = st.session_state.messages[0]["content"]
+        import os
+        try:
+            if st.session_state.get("tts_engine") == "System Native (Fast)":
+                import subprocess
+                subprocess.Popen(["say", greeting_msg])
+                duration_ms = int(len(greeting_msg.split()) / 2.5 * 1000)
+                st.session_state.tts_wait_ms = duration_ms + 1000
+                st.rerun()
+            else:
+                import soundfile as sf
+                import base64
+                import os
+                
+                k_model = get_kokoro_model()
+                if k_model:
+                    samples, sample_rate = k_model.create(
+                        greeting_msg, voice="af_bella", speed=1.0, lang="en-us"
+                    )
+                    sf.write("greeting.wav", samples, sample_rate)
+                    with open("greeting.wav", "rb") as f:
+                        st.session_state.tts_audio_bytes = f.read()
+                    os.remove("greeting.wav")
+                    
+                    duration_ms = int((len(samples) / sample_rate) * 1000)
+                    st.session_state.tts_wait_ms = duration_ms + 1000
+                    st.rerun()
+        except Exception as e:
+            print("Greeting TTS Error:", e)
+            
+    if new_prompt:
+        st.session_state.messages.append({"role": "user", "content": new_prompt})
+        with st.chat_message("user"):
+            st.markdown(new_prompt)
+            
+        with st.chat_message("assistant"):
+            with st.spinner("Stylist is thinking..."):
+                response = st.session_state.stylist_agent.process_turn(new_prompt, st.session_state.messages[:-1])
+                st.markdown(response.message)
+                st.session_state.messages.append({"role": "assistant", "content": response.message})
+                
+                if response.ready_for_search:
+                    st.session_state.current_user_prompt = response.updated_query
+                    st.session_state.chat_ready_for_search = True
+                    search_clicked = True
+                    st.session_state.force_stop_mic = True
+                else:
+                    st.session_state.chat_ready_for_search = False
+                    search_clicked = False
+                    st.session_state.current_user_prompt = None
+                    
+                # TTS Generation
+                try:
+                    if st.session_state.get("tts_engine") == "System Native (Fast)":
+                        import subprocess
+                        subprocess.Popen(["say", response.message])
+                        duration_ms = int(len(response.message.split()) / 2.5 * 1000)
+                        st.session_state.tts_wait_ms = duration_ms + 1000
+                        st.rerun()
+                    else:
+                        import os
+                        import soundfile as sf
+                        
+                        k_model = get_kokoro_model()
+                        if k_model:
+                            samples, sample_rate = k_model.create(
+                                response.message, voice="af_bella", speed=1.0, lang="en-us"
+                            )
+                            sf.write("response.wav", samples, sample_rate)
+                            with open("response.wav", "rb") as f:
+                                st.session_state.tts_audio_bytes = f.read()
+                            os.remove("response.wav")
+                            
+                            duration_ms = int((len(samples) / sample_rate) * 1000)
+                            st.session_state.tts_wait_ms = duration_ms + 1000
+                            st.rerun()
+                        else:
+                            st.error("Kokoro model files not found. Did you download them?")
+                except Exception as e:
+                    print("Local TTS Error:", e)
+
+    user_prompt = st.session_state.current_user_prompt
 
 
 # ------------------------------------------------------------------------------
@@ -443,7 +681,7 @@ else:
 # Run the pipeline if search is ready, OR if we have cached results for the current prompt.
 # In Chat mode, we only run stage 1-3 if search_clicked was true OR if it's a rerun.
 # Actually, the logic below handles caching inside the providers/brain, but we rely on st.session_state.search_results.
-if st.session_state.chat_ready_for_search and user_prompt:
+if (search_clicked or st.session_state.get("chat_ready_for_search")) and user_prompt:
     
     # In chat mode, render everything inside a chat bubble
     if st.session_state.config.ui_mode == UIMode.CHAT:
@@ -585,204 +823,196 @@ if st.session_state.chat_ready_for_search and user_prompt:
                 st.session_state.last_status = provider.last_status_message
             else:
                 st.session_state.last_status = "🟢 Loaded directly from Dev Mock Catalog."
+                
+            # Reset the search trigger so the pipeline doesn't run again on UI interactions
+            st.session_state.chat_ready_for_search = False
     
-    # ------------------------------------------------------------------------------
-    # 5. Intent Normalization Inspector (Stage 1 Visualization)
-    # ------------------------------------------------------------------------------
-    if st.session_state.canonical_query:
-        q: CanonicalShoppingQuery = st.session_state.canonical_query
-        with st.expander(f"🤖 Stage 1: LLM Normalized Taxonomy ({st.session_state.normalization_source})", expanded=True):
-            col1, col2, col3, col4, col5, col6, col7, col8 = st.columns(8)
-            with col1:
-                st.metric("👤 Gender", q.gender.value.title())
-            with col2:
-                st.metric("🏷️ Category", q.category.value.title())
-            with col3:
-                st.metric("🎉 Occasion", getattr(q, "occasion", "Any").value.title() if hasattr(q, "occasion") and hasattr(getattr(q, "occasion", None), "value") else "Any")
-            with col4:
-                st.metric("🎨 Color", q.color.value)
-            with col5:
-                st.metric("🎨 Design Pattern", q.design.value)
-            with col6:
-                st.metric("📏 Size", q.size if q.size else "Any")
-            with col7:
-                st.metric("👕 Fit", q.fit.value.replace(" Fit", ""))
-            with col8:
-                st.metric("💰 Budget Cap", f"{curr_sym}{q.max_price:.0f}" if q.max_price else "No Cap")
+# ------------------------------------------------------------------------------
+# 5. Intent Normalization Inspector (Stage 1 Visualization)
+# ------------------------------------------------------------------------------
+if st.session_state.canonical_query:
+    q: CanonicalShoppingQuery = st.session_state.canonical_query
+    with st.expander(f"🤖 Stage 1: LLM Normalized Taxonomy ({st.session_state.normalization_source})", expanded=True):
+        col1, col2, col3, col4, col5, col6, col7, col8 = st.columns(8)
+        with col1:
+            st.metric("👤 Gender", q.gender.value.title())
+        with col2:
+            st.metric("🏷️ Category", q.category.value.title())
+        with col3:
+            st.metric("🎉 Occasion", getattr(q, "occasion", "Any").value.title() if hasattr(q, "occasion") and hasattr(getattr(q, "occasion", None), "value") else "Any")
+        with col4:
+            st.metric("🎨 Color", q.color.value)
+        with col5:
+            st.metric("🎨 Design Pattern", q.design.value)
+        with col6:
+            st.metric("📏 Size", q.size if q.size else "Any")
+        with col7:
+            st.metric("👕 Fit", q.fit.value.replace(" Fit", ""))
+        with col8:
+            st.metric("💰 Budget Cap", f"{curr_sym}{q.max_price:.0f}" if q.max_price else "No Cap")
+
+# ------------------------------------------------------------------------------
+# 6. Validated Products Visualizer (Stage 3 Output)
+# ------------------------------------------------------------------------------
+if st.session_state.search_results:
+    st.subheader(f"🔥 Top Picks For You ({len(st.session_state.search_results)} Matches)")
     
-    # Display Status Banner
-    if "last_status" in st.session_state and st.session_state.last_status:
-        if "FALLBACK TRIGGERED" in st.session_state.last_status:
-            st.warning(f"**Data Pipeline Notification:**\n\n{st.session_state.last_status}")
-        else:
-            st.success(f"**Data Source Status:** {st.session_state.last_status}")
-    
-    # ------------------------------------------------------------------------------
-    # 6. Validated Products Visualizer (Stage 3 Output)
-    # ------------------------------------------------------------------------------
-    if st.session_state.search_results:
-        st.subheader(f"📦 Validated Product Matches ({len(st.session_state.search_results)} items passed LLM QA)")
+    if "carousel_index" not in st.session_state:
+        st.session_state.carousel_index = 0
         
-        cols = st.columns(3)
-        eval_map = {e.product_id: e for e in st.session_state.evaluations}
+    idx = st.session_state.carousel_index
+    items_per_page = 3
     
-        for idx, prod in enumerate(st.session_state.search_results):
-            with cols[idx % 3]:
-                with st.container(border=True):
-                    # Product Image
-                    img_url = prod.specs.get("image_url")
-                    if img_url:
-                        st.image(img_url, use_container_width=True)
-                    
-                    st.markdown(f"#### {prod.title}")
-                    
-                    # Attribute Badges
-                    prod_gender = prod.specs.get("gender") or "Unisex"
-                    prod_color = prod.specs.get("color") or "Standard"
-                    prod_design = prod.specs.get("design") or "Standard"
-                    prod_fit = prod.specs.get("fit") or "Regular Fit"
-                    st.markdown(f"👤 `{prod_gender}` | 🎨 `{prod_color}` | 🏷️ `{prod_design}`")
+    # Navigation Row
+    nav_col1, nav_col2, nav_col3 = st.columns([1, 8, 1])
+    with nav_col1:
+        if st.button("⬅️ Prev", disabled=(idx == 0), use_container_width=True):
+            st.session_state.carousel_index -= items_per_page
+            st.rerun()
+    with nav_col3:
+        if st.button("Next ➡️", disabled=(idx + items_per_page >= len(st.session_state.search_results)), use_container_width=True):
+            st.session_state.carousel_index += items_per_page
+            st.rerun()
+            
+    # Carousel Window
+    cols = st.columns(3)
+    eval_map = {e.product_id: e for e in st.session_state.evaluations}
     
-                    # Fandom & Bundle Offer Badges
-                    fandom_val = prod.specs.get("fandom_partner")
-                    if fandom_val:
-                        st.markdown(f"⚡ **Collaboration:** `{fandom_val}`")
-    
-                    bundles = prod.specs.get("bundle_offers", [])
-                    if bundles:
-                        st.info(f"🎁 **Deal:** {', '.join(bundles)}")
-    
-                    # Pricing details
-                    mrp_val = prod.specs.get("mrp_inr")
-                    member_price = prod.specs.get("member_price_inr")
+    current_view = st.session_state.search_results[idx : idx + items_per_page]
+
+    for i, prod in enumerate(current_view):
+        with cols[i]:
+            with st.container(border=True):
+                # Premium HTML/CSS Card
+                img_url = prod.specs.get("image_url") or prod.specs.get("display_image") or "https://via.placeholder.com/400x500"
+                
+                ev = eval_map.get(prod.id)
+                match_pct = int(ev.match_score * 100) if ev else 0
+                badge_color = "#10b981" if match_pct >= 70 else ("#f59e0b" if match_pct >= 40 else "#ef4444")
+                
+                mrp_val = prod.specs.get("mrp_inr")
+                mrp_html = f"<span style='text-decoration: line-through; color: #9ca3af; font-size: 0.85em; margin-left: 8px;'>{curr_sym}{mrp_val:.0f}</span>" if mrp_val and mrp_val > prod.price else ""
+                
+                # Dark mode compatible styles
+                st.markdown(f"""
+                <div style="position: relative; border-radius: 16px; overflow: hidden; margin-bottom: 12px; background: rgba(30, 30, 30, 0.4); border: 1px solid rgba(255, 255, 255, 0.1); transition: transform 0.2s;">
+                    <div style="position: absolute; top: 12px; right: 12px; background: {badge_color}; color: white; padding: 4px 12px; border-radius: 20px; font-size: 0.8em; font-weight: bold; z-index: 2; box-shadow: 0 4px 6px rgba(0,0,0,0.3);">
+                        🧠 {match_pct}% Match
+                    </div>
+                    <div style="height: 380px; overflow: hidden; display: flex; align-items: center; justify-content: center; background: #000;">
+                        <img src="{img_url}" style="width: 100%; height: 100%; object-fit: cover;" />
+                    </div>
+                    <div style="padding: 16px;">
+                        <h4 style="margin: 0 0 8px 0; font-size: 1.05em; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0.9;">{prod.title}</h4>
+                        <div style="font-size: 1.3em; font-weight: bold; margin-bottom: 6px;">
+                            {curr_sym}{prod.price:.0f} {mrp_html}
+                        </div>
+                        <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.9em; opacity: 0.7;">
+                            <span>⭐ {prod.rating:.1f} ({prod.review_count})</span>
+                            <span>{("🚀 Express" if prod.shipping_days <= 2 else "🚚 Std") if hasattr(prod, 'shipping_days') and prod.shipping_days else ""}</span>
+                        </div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                if prod.price > st.session_state.config.max_cost_hitl:
+                    st.warning("⚠️ Requires Approval")
                     
-                    price_text = f"**Price:** `{curr_sym}{prod.price:.0f}`"
-                    if mrp_val and mrp_val > prod.price:
-                        price_text += f" ~`{curr_sym}{mrp_val:.0f}`~"
-                    st.markdown(price_text)
+                if prod.id in st.session_state.items_in_cart:
+                    btn_label = f"✅ {st.session_state.items_in_cart[prod.id]} In Cart"
+                else:
+                    btn_label = "🛒 Add to Cart"
+                    
+                colX, colY = st.columns(2)
+                with colX:
+                    if st.button(btn_label, key=f"add_{prod.id}", use_container_width=True):
+                        add_to_cart_dialog(prod)
+                with colY:
+                    if prod.source_url:
+                        st.link_button("View ↗", prod.source_url, use_container_width=True)
+
     
-                    if member_price:
-                        st.markdown(f"👑 **TriBe Member Price:** `{curr_sym}{member_price:.0f}`")
-                    
-                    # Rating and Reviews
-                    st.markdown(f"⭐ **{prod.rating}** ({prod.review_count} reviews)")
-                    
-                    # Rich Description if enriched (hide behind expander to save space)
-                    if prod.rich_description:
-                        with st.expander("📝 View Description"):
-                            st.markdown(prod.rich_description, unsafe_allow_html=True)
-                    
-                    # Shipping Logistics Display
-                    if hasattr(prod, 'shipping_days') and prod.shipping_days:
-                        delivery_tag = "🚀 **Express Delivery**" if prod.shipping_days <= 2 else "🚚 **Standard Delivery**"
-                        st.markdown(f"{delivery_tag}: Arrives in `{prod.shipping_days} days`")
-    
-                    st.markdown(f"**Fit & Fabric:** `{prod_fit}` | `{prod.specs.get('fabric', 'Cotton')}`")
-                    
-                    # LLM QA Score Badge
-                    ev = eval_map.get(prod.id)
-                    if ev:
-                        st.caption(f"🧠 **LLM Match Score:** `{int(ev.match_score * 100)}%` — *{ev.reason}*")
-    
-                    # Sizes in stock
-                    sizes = prod.specs.get("available_sizes")
-                    if sizes:
-                        st.caption(f"Sizes in stock: {', '.join(sizes)}")
-                    
-                    # Check HITL condition visually
-                    if prod.price > st.session_state.config.max_cost_hitl:
-                        st.warning(f"⚠️ Price > {curr_sym}{st.session_state.config.max_cost_hitl:.2f} (Triggers HITL)")
-                    else:
-                        st.success("✅ Within Autonomous Limit")
-    
-                    colX, colY = st.columns(2)
-                    with colX:
-                        if prod.id in st.session_state.items_in_cart:
-                            btn_label = f"✅ {st.session_state.items_in_cart[prod.id]} In Cart - Add More"
-                        else:
-                            btn_label = "🛒 Add to Cart"
+    # Page Indicator Dots
+    total_pages = (len(st.session_state.search_results) + items_per_page - 1) // items_per_page
+    current_page = idx // items_per_page
+    dots = ["●" if p == current_page else "○" for p in range(total_pages)]
+    st.markdown(f"<div style='text-align: center; font-size: 1.5em; letter-spacing: 5px; opacity: 0.6; margin-top: 10px; margin-bottom: 20px;'>{''.join(dots)}</div>", unsafe_allow_html=True)
+
+    with st.expander("🔍 Inspect Raw Canonical Query & Evaluations"):
+        st.json({
+            "canonical_query": st.session_state.canonical_query.model_dump() if st.session_state.canonical_query else None,
+            "llm_evaluations": [e.model_dump() for e in st.session_state.evaluations],
+            "products_returned": [p.model_dump() for p in st.session_state.search_results]
+        })
+
+# ------------------------------------------------------------------------------
+# 7. Discarded Products Visualizer (Extra products that failed QA / overflow)
+# ------------------------------------------------------------------------------
+if "rejected_products" in st.session_state and st.session_state.rejected_products:
+    st.markdown("---")
+    rejected = st.session_state.rejected_products
+    local_eval_map = {e.product_id: e for e in st.session_state.evaluations}
+
+    # Re-sort by composite score so highest partial-matches appear first
+    import math as _math
+    def _b_score(p):
+        return p.rating * _math.log10(p.review_count + 1)
+    _all_b = [_b_score(p) for p in rejected]
+    _max_b = max(_all_b, default=1.0) or 1.0
+    def _composite(p):
+        ev = local_eval_map.get(p.id)
+        llm_s = ev.match_score if ev else 0.0
+        return llm_s * 0.7 + (_b_score(p) / _max_b) * 0.3
+    rejected = sorted(rejected, key=_composite, reverse=True)
+
+    with st.expander(f"📦 Additional Catalog Items & Filtered Products ({len(rejected)} items)", expanded=False):
+        # Render in rows of 5
+        for i in range(0, len(rejected), 5):
+            row_cols = st.columns(5)
+            for j in range(5):
+                if i + j < len(rejected):
+                    prod = rejected[i + j]
+                    eval_info = local_eval_map.get(prod.id)
+                    with row_cols[j]:
+                        with st.container(border=True):
+                            # Product Image
+                            img_url = prod.specs.get("display_image") or prod.specs.get("image_url")
+                            if img_url:
+                                st.image(img_url, use_container_width=True)
+                            else:
+                                st.image("https://via.placeholder.com/300x400?text=No+Image", use_container_width=True)
+
+                            # Title & Price
+                            st.markdown(f"**{prod.title[:45]}...**" if len(prod.title) > 45 else f"**{prod.title}**")
                             
-                        if st.button(btn_label, key=f"add_{prod.id}", use_container_width=True):
-                            add_to_cart_dialog(prod)
-                    with colY:
-                        if prod.source_url:
-                            st.link_button("View on Store ↗", prod.source_url, use_container_width=True)
-    
-        with st.expander("🔍 Inspect Raw Canonical Query & Evaluations"):
-            st.json({
-                "canonical_query": st.session_state.canonical_query.model_dump() if st.session_state.canonical_query else None,
-                "llm_evaluations": [e.model_dump() for e in st.session_state.evaluations],
-                "products_returned": [p.model_dump() for p in st.session_state.search_results]
-            })
-    
-    # ------------------------------------------------------------------------------
-    # 7. Discarded Products Visualizer (Extra products that failed QA / overflow)
-    # ------------------------------------------------------------------------------
-    if "rejected_products" in st.session_state and st.session_state.rejected_products:
-        st.markdown("---")
-        rejected = st.session_state.rejected_products
-        local_eval_map = {e.product_id: e for e in st.session_state.evaluations}
-    
-        # Re-sort by composite score so highest partial-matches appear first
-        import math as _math
-        def _b_score(p):
-            return p.rating * _math.log10(p.review_count + 1)
-        _all_b = [_b_score(p) for p in rejected]
-        _max_b = max(_all_b, default=1.0) or 1.0
-        def _composite(p):
-            ev = local_eval_map.get(p.id)
-            llm_s = ev.match_score if ev else 0.0
-            return llm_s * 0.7 + (_b_score(p) / _max_b) * 0.3
-        rejected = sorted(rejected, key=_composite, reverse=True)
-    
-        with st.expander(f"📦 Additional Catalog Items & Filtered Products ({len(rejected)} items)", expanded=False):
-            # Render in rows of 5
-            for i in range(0, len(rejected), 5):
-                row_cols = st.columns(5)
-                for j in range(5):
-                    if i + j < len(rejected):
-                        prod = rejected[i + j]
-                        eval_info = local_eval_map.get(prod.id)
-                        with row_cols[j]:
-                            with st.container(border=True):
-                                # Product Image
-                                img_url = prod.specs.get("display_image") or prod.specs.get("image_url")
-                                if img_url:
-                                    st.image(img_url, use_container_width=True)
+                            colA, colB = st.columns(2)
+                            with colA:
+                                st.markdown(f"**{curr_sym}{prod.price:.0f}**")
+                            with colB:
+                                st.markdown(f"⭐ {prod.rating:.1f}")
+                            
+                            # Score badge + reason
+                            if eval_info:
+                                score_pct = int(eval_info.match_score * 100)
+                                if score_pct >= 65:
+                                    badge = f"🟡 {score_pct}% match"
+                                elif score_pct >= 40:
+                                    badge = f"🟠 {score_pct}% match"
                                 else:
-                                    st.image("https://via.placeholder.com/300x400?text=No+Image", use_container_width=True)
-    
-                                # Title & Price
-                                st.markdown(f"**{prod.title[:45]}...**" if len(prod.title) > 45 else f"**{prod.title}**")
+                                    badge = f"🔴 {score_pct}% — Filtered"
+                                st.caption(f"{badge}")
+                                st.caption(f"*{eval_info.reason}*")
+                            else:
+                                st.caption("⚡ Not evaluated")
+                            
+                            if prod.id in st.session_state.items_in_cart:
+                                btn_label_rej = f"✅ {st.session_state.items_in_cart[prod.id]} In Cart - Add More"
+                            else:
+                                btn_label_rej = "🛒 Add to Cart"
                                 
-                                colA, colB = st.columns(2)
-                                with colA:
-                                    st.markdown(f"**{curr_sym}{prod.price:.0f}**")
-                                with colB:
-                                    st.markdown(f"⭐ {prod.rating:.1f}")
-                                
-                                # Score badge + reason
-                                if eval_info:
-                                    score_pct = int(eval_info.match_score * 100)
-                                    if score_pct >= 65:
-                                        badge = f"🟡 {score_pct}% match"
-                                    elif score_pct >= 40:
-                                        badge = f"🟠 {score_pct}% match"
-                                    else:
-                                        badge = f"🔴 {score_pct}% — Filtered"
-                                    st.caption(f"{badge}")
-                                    st.caption(f"*{eval_info.reason}*")
-                                else:
-                                    st.caption("⚡ Not evaluated")
-                                
-                                if prod.id in st.session_state.items_in_cart:
-                                    btn_label_rej = f"✅ {st.session_state.items_in_cart[prod.id]} In Cart - Add More"
-                                else:
-                                    btn_label_rej = "🛒 Add to Cart"
-                                    
-                                if st.button(btn_label_rej, key=f"add_rej_{prod.id}", use_container_width=True):
-                                    add_to_cart_dialog(prod)
-                                if prod.source_url:
-                                    st.link_button("View ↗", prod.source_url, use_container_width=True)
-    
-    
+                            if st.button(btn_label_rej, key=f"add_rej_{prod.id}", use_container_width=True):
+                                add_to_cart_dialog(prod)
+                            if prod.source_url:
+                                st.link_button("View ↗", prod.source_url, use_container_width=True)
+
+

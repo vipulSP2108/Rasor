@@ -100,3 +100,15 @@ class AgentConfig(BaseModel):
         default="Not Set",
         description="User's current location (e.g., Mumbai, Delhi, New York) for fast shipping calculations."
     )
+    
+    # Voice UI Settings
+    tts_voice: str = Field(
+        default="Samantha",
+        description="The native macOS voice used for local Text-to-Speech playback."
+    )
+    
+    # Semantic Pop-Culture Engine
+    enable_semantic_engine: bool = Field(
+        default=True,
+        description="If True, expands fandom queries with semantic knowledge graph (e.g., 'Panther' → 'wakanda, t'challa'). May reduce result count but improves relevance."
+    )

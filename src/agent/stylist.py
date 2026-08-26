@@ -37,6 +37,7 @@ class StylistResponse(BaseModel):
     message: str = Field(..., description="Conversational reply to show the user.")
     ready_for_search: bool = Field(default=False, description="True when intent is refined enough to hit CatalogAgent.")
     updated_query: str = Field(default="", description="Synthesized search query from all conversation turns so far.")
+    suggested_options: list[str] = Field(default_factory=list, description="List of short quick-reply options for the user to tap (e.g. ['Oversized', 'Slim Fit']).")
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +165,8 @@ JSON SCHEMA:
   "intent": "greeting|clarify|search|autopilot",
   "message": "Your natural language reply to the user (ONLY ONE QUESTION MAX)",
   "ready_for_search": true or false,
-  "updated_query": "concise search query string if ready_for_search is true, else empty string"
+  "updated_query": "concise search query string if ready_for_search is true, else empty string",
+  "suggested_options": ["Option 1", "Option 2"] // Provide 2-4 short options for the user to tap if you asked a clarifying question (e.g. ["Oversized", "Slim Fit"]). Max 3 words per option. Leave empty [] if no options make sense.
 }
 """
 
@@ -376,5 +378,6 @@ class StylistAgent:
             intent=parsed.get("intent", "clarify"),
             message=parsed.get("message", "Could you tell me more about what you're looking for?"),
             ready_for_search=parsed.get("ready_for_search", False),
-            updated_query=parsed.get("updated_query", "")
+            updated_query=parsed.get("updated_query", ""),
+            suggested_options=parsed.get("suggested_options", [])
         )

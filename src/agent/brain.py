@@ -107,25 +107,50 @@ _FANDOM_KNOWLEDGE_GRAPH: dict = {
     "iron man": ["tony stark", "stark industries", "arc reactor", "marvel"],
     "captain america": ["steve rogers", "shield", "first avenger", "marvel"],
     "thor": ["mjolnir", "asgard", "god of thunder", "marvel"],
-    "deadpool": ["ryan reynolds", "marvel", "merc with a mouth"],
-    "wolverine": ["x-men", "logan", "mutant", "marvel"],
+    "deadpool": ["ryan reynolds", "marvel", "merc with a mouth", "wade wilson"],
+    "wolverine": ["x-men", "logan", "mutant", "marvel", "adamantium"],
     "venom": ["symbiote", "eddie brock", "marvel", "carnage"],
+    "hulk": ["bruce banner", "avengers", "marvel", "smash"],
+    "guardians": ["groot", "rocket", "star-lord", "marvel", "galaxy"],
+    "groot": ["guardians", "galaxy", "marvel", "i am groot"],
+    "thanos": ["infinity", "gauntlet", "marvel", "avengers"],
+    "loki": ["asgard", "god of mischief", "marvel"],
+    "hawkeye": ["clint barton", "avengers", "marvel", "arrow"],
+    "antman": ["scott lang", "quantum", "marvel", "pym"],
+    "doctor strange": ["sorcerer supreme", "marvel", "multiversal"],
     # DC
     "batman": ["gotham", "dark knight", "bruce wayne", "joker", "dc"],
     "superman": ["clark kent", "krypton", "man of steel", "dc"],
     "wonder woman": ["diana prince", "amazon", "dc"],
     "flash": ["barry allen", "speedster", "central city", "dc"],
+    "aquaman": ["arthur curry", "atlantis", "dc", "ocean"],
+    "joker": ["gotham", "dc", "villain", "batman"],
+    "harley quinn": ["dc", "joker", "gotham", "villain"],
+    "green lantern": ["dc", "hal jordan", "ring"],
     # Anime
     "naruto": ["hidden leaf", "hokage", "sasuke", "kakashi", "anime", "shinobi"],
     "dragon ball": ["dbz", "goku", "vegeta", "saiyan", "anime"],
     "dbz": ["dragon ball", "goku", "vegeta", "saiyan", "anime"],
+    "goku": ["dragon ball", "saiyan", "kamehameha", "anime"],
     "one piece": ["luffy", "straw hat", "zoro", "anime", "pirate"],
+    "luffy": ["one piece", "straw hat", "pirate", "anime"],
     "attack on titan": ["aot", "eren", "levi", "survey corps", "anime"],
+    "aot": ["attack on titan", "eren", "levi", "anime"],
     "jujutsu kaisen": ["jjk", "gojo", "itadori", "sukuna", "anime"],
-    "demon slayer": ["tanjiro", "nezuko", "zenitsu", "anime"],
+    "jjk": ["jujutsu kaisen", "gojo", "itadori", "anime"],
+    "demon slayer": ["tanjiro", "nezuko", "zenitsu", "anime", "kimetsu"],
+    "my hero academia": ["mha", "deku", "plus ultra", "anime", "izuku"],
+    "mha": ["my hero academia", "deku", "all might", "anime"],
+    "bleach": ["ichigo", "soul reaper", "anime", "zanpakuto"],
+    "hunter x hunter": ["hxh", "gon", "killua", "nen", "anime"],
+    # Disney / Pop Culture
+    "mickey mouse": ["disney", "mickey", "classic"],
+    "star wars": ["darth vader", "yoda", "jedi", "sith", "force", "galaxy"],
+    "darth vader": ["star wars", "sith", "dark side", "force"],
+    "mandalorian": ["star wars", "mando", "baby yoda", "grogu"],
 }
 
-def preprocess_prompt(prompt: str) -> str:
+def preprocess_prompt(prompt: str, enable_semantic: bool = True) -> str:
     """Step 0: Normalize case, fix spelling, expand synonyms and knowledge graph before LLM or rules."""
     text = prompt.strip().lower()
     
@@ -137,17 +162,17 @@ def preprocess_prompt(prompt: str) -> str:
     for synonym, canonical in _SYNONYM_MAP.items():
         text = re.sub(rf"\b{re.escape(synonym)}\b", canonical, text)
         
-    # Apply Fandom Knowledge Graph Expansion (append related terms for wider search net)
-    expanded_terms = []
-    for entity, related_keywords in _FANDOM_KNOWLEDGE_GRAPH.items():
-        if re.search(rf"\b{re.escape(entity)}\b", text):
-            expanded_terms.extend(related_keywords)
-            
-    # Append unique expanded terms to the end of the text
-    if expanded_terms:
-        # Deduplicate and append
-        unique_terms = list(dict.fromkeys(expanded_terms))
-        text = text + " " + " ".join(unique_terms)
+    # Apply Fandom Knowledge Graph Expansion (only if enabled)
+    if enable_semantic:
+        expanded_terms = []
+        for entity, related_keywords in _FANDOM_KNOWLEDGE_GRAPH.items():
+            if re.search(rf"\b{re.escape(entity)}\b", text):
+                expanded_terms.extend(related_keywords)
+                
+        # Append unique expanded terms to the end of the text
+        if expanded_terms:
+            unique_terms = list(dict.fromkeys(expanded_terms))
+            text = text + " " + " ".join(unique_terms)
     
     return text
 
@@ -293,7 +318,7 @@ class AgentBrain:
 
     # ── Stage 1: Intent Normalization ────────────────────────────────────────
 
-    def normalize_intent(self, user_prompt: str) -> Tuple[CanonicalShoppingQuery, str]:
+    def normalize_intent(self, user_prompt: str, enable_semantic: bool = True) -> Tuple[CanonicalShoppingQuery, str]:
         """Normalizes free-form prompt → canonical Pydantic enums.
 
         Steps:
@@ -302,7 +327,7 @@ class AgentBrain:
           c) Fall back to regex parser if LLM unavailable.
         """
         # Step a: Pre-process
-        cleaned_prompt = preprocess_prompt(user_prompt)
+        cleaned_prompt = preprocess_prompt(user_prompt, enable_semantic=enable_semantic)
         print(f"[Brain] Pre-processed: '{user_prompt}' → '{cleaned_prompt}'")
 
         system = (
