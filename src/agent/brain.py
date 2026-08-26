@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 
 from src.agent.state import (
     CanonicalShoppingQuery,
+    MultiShoppingQuery,
     CategoryEnum,
     ColorEnum,
     DesignEnum,
@@ -150,10 +151,25 @@ _FANDOM_KNOWLEDGE_GRAPH: dict = {
     "mandalorian": ["star wars", "mando", "baby yoda", "grogu"],
 }
 
+_VIBE_MAP: dict = {
+    "retro grunge": "oversized fit washed graphic print maroon grey black",
+    "grunge": "oversized fit washed graphic print maroon grey black",
+    "minimalist": "regular fit solid beige white navy",
+    "streetwear": "baggy fit graphic print black white",
+    "y2k": "baggy fit washed typography pink blue",
+    "gym": "regular fit solid black grey blue",
+    "cozy": "oversized fit solid grey beige brown"
+}
+
 def preprocess_prompt(prompt: str, enable_semantic: bool = True) -> str:
     """Step 0: Normalize case, fix spelling, expand synonyms and knowledge graph before LLM or rules."""
     text = prompt.strip().lower()
     
+    # Apply vibe mapping (exact phrase matching)
+    for vibe, expansion in _VIBE_MAP.items():
+        if re.search(rf"\b{re.escape(vibe)}\b", text):
+            text = text + " " + expansion
+            
     # Apply spell corrections (exact phrase matching)
     for typo, fix in _SPELL_CORRECTIONS.items():
         text = re.sub(rf"\b{re.escape(typo)}\b", fix, text)
@@ -304,6 +320,33 @@ class AgentBrain:
         """Try Gemini first, then Groq, return None if both fail."""
         return self._call_gemini(prompt, system) or self._call_groq(prompt, system)
 
+    def _call_gemini_markdown(self, prompt: str, system: str) -> Optional[str]:
+        if not self.gemini_key:
+            return None
+        try:
+            url = (
+                f"https://generativelanguage.googleapis.com/v1beta/models/"
+                f"{self.primary_model}:generateContent?key={self.gemini_key}"
+            )
+            payload = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "systemInstruction": {"parts": [{"text": system}]},
+                "generationConfig": {"temperature": 0.1}, # No responseMimeType!
+            }
+            resp = requests.post(url, json=payload, timeout=8)
+            if resp.status_code == 200:
+                text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+                self.last_model_used = f"Google {self.primary_model} (MD)"
+                return text
+            print(f"[Brain/Gemini] HTTP {resp.status_code}: {resp.text[:150]}")
+        except Exception as e:
+            print(f"[Brain/Gemini] Error: {e}")
+        return None
+
+    def _call_llm_markdown(self, prompt: str, system: str) -> Optional[str]:
+        """Try Gemini Markdown. If fails, just fallback to standard Groq (which returns JSON)."""
+        return self._call_gemini_markdown(prompt, system) or self._call_groq(prompt, system)
+
     def _extract_json(self, raw: str) -> Optional[dict]:
         """Safely extract JSON object from LLM output."""
         if not raw:
@@ -318,73 +361,61 @@ class AgentBrain:
 
     # ── Stage 1: Intent Normalization ────────────────────────────────────────
 
-    def normalize_intent(self, user_prompt: str, enable_semantic: bool = True) -> Tuple[CanonicalShoppingQuery, str]:
-        """Normalizes free-form prompt → canonical Pydantic enums.
-
-        Steps:
-          a) Spell-correct & synonym-expand the raw prompt.
-          b) Call LLM for structured JSON extraction.
-          c) Fall back to regex parser if LLM unavailable.
-        """
+    def normalize_intent(self, user_prompt: str, budget: float = None, enable_semantic: bool = True):
         # Step a: Pre-process
         cleaned_prompt = preprocess_prompt(user_prompt, enable_semantic=enable_semantic)
         print(f"[Brain] Pre-processed: '{user_prompt}' → '{cleaned_prompt}'")
 
         system = (
-            "You are a precision e-commerce intent extractor for an Indian fashion store (Bewakoof.com). "
+            "You are a precision e-commerce intent extractor for an Indian fashion store.\n"
             "Extract all shopping attributes from the user query into this exact JSON schema:\n"
             "{\n"
-            '  "cleaned_keywords": string (core product keywords, stripped of noise and stripped of any highly specific visual descriptions),\n'
-            '  "specific_visual_intent": string or null (ONLY use this if the user provides a very long/detailed description of a specific graphic, print, or image they want on the shirt. If they just say something like "L Black Panther t-shirts", leave this null. If populated, EXCLUDE these words from cleaned_keywords),\n'
-            '  "gender": "men" | "women" | "unisex" | "all",\n'
-            '  "category": "t-shirt" | "hoodie" | "joggers" | "jeans" | "shirt" | "sliders" | "footwear" | "vest" | "electronics" | "general",\n'
-            '  "color": "Black" | "Blue" | "White" | "Red" | "Green" | "Orange" | "Grey" | "Yellow" | "Maroon" | "Beige" | "Brown" | "Navy" | "Any",\n'
-            '  "design": "Solid" | "Graphic Print" | "Typography" | "All Over Print" | "Washed" | "Checked" | "Any",\n'
-            '  "fit": "Oversized Fit" | "Regular Fit" | "Boyfriend Fit" | "Baggy Fit" | "Super Baggy Fit" | "Slim Fit" | "Any",\n'
-            '  "sleeve": "Half Sleeve" | "Full Sleeve" | "Sleeveless" | "Any",\n'
-            '  "fabric": "Cotton" | "Polyester" | "Blend" | "Fleece" | "Linen" | "Nylon" | "Any",\n'
-            '  "neck": "Round Neck" | "V-Neck" | "Polo" | "Collar" | "Hood" | "Crew Neck" | "Any",\n'
-            '  "occasion": "Party" | "Gym" | "Casual" | "Office" | "Any",\n'
-            '  "fandom": string or "None",\n'
-            '  "size": string or null (e.g. "L", "M", "XL", "2XL", "UK 9" for footwear),\n'
-            '  "quantity": integer (default 1),\n'
-            '  "max_price": float or null,\n'
-            '  "min_rating": float or null,\n'
-            '  "fast_shipping_requested": boolean (true if user wants fast/early delivery, else false),\n'
-            '  "negative_keywords": [string] (list of explicit exclusions like "logo", "polo", "printed")\n'
+            '  "items_to_buy": [\n'
+            '    {\n'
+            '      "cleaned_keywords": string,\n'
+            '      "specific_visual_intent": string or null,\n'
+            '      "gender": "men" | "women" | "unisex" | "all",\n'
+            '      "category": "t-shirt" | "hoodie" | "joggers" | "jeans" | "shirt" | "sliders" | "footwear" | "vest" | "electronics" | "general",\n'
+            '      "color": "Black" | "Blue" | "White" | "Red" | "Green" | "Orange" | "Grey" | "Yellow" | "Maroon" | "Beige" | "Brown" | "Navy" | "Any",\n'
+            '      "design": "Solid" | "Graphic Print" | "Typography" | "All Over Print" | "Washed" | "Checked" | "Any",\n'
+            '      "fit": "Oversized Fit" | "Regular Fit" | "Boyfriend Fit" | "Baggy Fit" | "Super Baggy Fit" | "Slim Fit" | "Any",\n'
+            '      "sleeve": "Half Sleeve" | "Full Sleeve" | "Sleeveless" | "Any",\n'
+            '      "fabric": "Cotton" | "Polyester" | "Blend" | "Fleece" | "Linen" | "Nylon" | "Any",\n'
+            '      "neck": "Round Neck" | "V-Neck" | "Polo" | "Collar" | "Hood" | "Crew Neck" | "Any",\n'
+            '      "occasion": "Party" | "Gym" | "Casual" | "Office" | "Any",\n'
+            '      "fandom": string or "None",\n'
+            '      "size": string or null,\n'
+            '      "quantity": integer,\n'
+            '      "max_price": float or null,\n'
+            '      "min_rating": float or null,\n'
+            '      "fast_shipping_requested": boolean,\n'
+            '      "negative_keywords": [string]\n'
+            '    }\n'
+            '  ],\n'
+            '  "owned_items": [ { /* same schema as above */ } ]\n'
             "}\n\n"
             "RULES:\n"
-            "- 'plain', 'solid', 'basic', 'no print' → design: 'Solid'\n"
+            "- If the user specifies they ALREADY HAVE or OWN an item (e.g. 'I have a black t-shirt'), put it in 'owned_items'.\n"
+            "- Put target purchase items in 'items_to_buy'.\n"
+            "- 'plain', 'solid', 'basic' → design: 'Solid'\n"
             "- 'printed', 'graphic', 'anime' → design: 'Graphic Print'\n"
-            "- 'text', 'quote', 'slogan', 'typography' → design: 'Typography'\n"
-            "- 'washed', 'acid wash', 'vintage' → design: 'Washed'\n"
-            "- 'oversized', 'baggy', 'loose', 'relaxed' → fit: 'Oversized Fit'\n"
-            "- 'cotton', 'polyester', 'blend' → fabric\n"
-            "- 'round neck', 'v neck', 'polo' → neck\n"
+            "- 'oversized', 'baggy', 'loose' → fit: 'Oversized Fit'\n"
             "- 'batman', 'joker', 'superman', 'dc' → fandom: 'DC'\n"
             "- 'spider man', 'iron man', 'marvel', 'deadpool', 'thor', 'avengers' → fandom: 'Marvel'\n"
-            "- 'mickey', 'disney', 'minnie' → fandom: 'Disney'\n"
-            "- 'slider', 'sandal', 'chappal', 'flip flop' → category: 'sliders'\n"
-            "- 'full sleeve', 'long sleeve' → sleeve: 'Full Sleeve'\n"
-            "- 'half sleeve', 'short sleeve' → sleeve: 'Half Sleeve'\n"
-            "- 'club', 'party', 'clubbing', 'night out' → occasion: 'Party'\n"
-            "- 'gym', 'workout', 'active', 'sports' → occasion: 'Gym'\n"
-            "- 'casual', 'chill', 'street', 'everyday' → occasion: 'Casual'\n"
-            "- 'office', 'work', 'formal', 'meeting' → occasion: 'Office'\n"
-            "- 'fast', 'quick', 'urgent', 'express', 'rapid', 'early', 'soon' → fast_shipping_requested: true\n"
-            "- IMPORTANT: If the user asks for 'batman with arms crossed and wearing a metal suit', cleaned_keywords = 'batman', specific_visual_intent = 'arms crossed and wearing a metal suit'.\n"
-            "- Output ONLY valid JSON. No markdown, no extra text."
+            "- Output ONLY valid JSON."
         )
 
         msg = f"User prompt (pre-processed): \"{cleaned_prompt}\"\nOriginal: \"{user_prompt}\""
         raw_json = self._call_llm(msg, system)
 
-        if raw_json:
-            data = self._extract_json(raw_json)
-            if data:
+        items_to_buy = []
+        owned_items = []
+        
+        def parse_item_list(item_list):
+            parsed_items = []
+            for data in item_list:
                 try:
                     data["original_prompt"] = user_prompt
-                    # Validate enums — fall back to defaults on invalid value
                     data["gender"] = data.get("gender", "men") if data.get("gender") in [e.value for e in GenderEnum] else "men"
                     data["category"] = data.get("category", "t-shirt") if data.get("category") in [e.value for e in CategoryEnum] else "t-shirt"
                     data["color"] = data.get("color", "Any") if data.get("color") in [e.value for e in ColorEnum] else "Any"
@@ -397,40 +428,77 @@ class AgentBrain:
                     data["occasion"] = data.get("occasion", "Any") if data.get("occasion") in [e.value for e in OccasionEnum] else "Any"
                     data["fandom"] = data.get("fandom", "None") if data.get("fandom") in [e.value for e in FandomEnum] else "None"
                     data["fast_shipping_requested"] = data.get("fast_shipping_requested", False)
-                    canonical = CanonicalShoppingQuery(**data)
-                    return canonical, f"🧠 Normalized by {self.last_model_used}"
+                    parsed_items.append(CanonicalShoppingQuery(**data))
                 except Exception as e:
-                    print(f"[Brain] Schema validation error: {e}")
+                    print(f"[Brain] Item Schema validation error: {e}")
+            return parsed_items
 
-        # Rule-based fallback
-        self.last_model_used = "Rule Engine"
-        parsed_raw = parse_user_intent(cleaned_prompt)
+        if raw_json:
+            data = self._extract_json(raw_json)
+            if data:
+                items_to_buy = parse_item_list(data.get("items_to_buy", []))
+                owned_items = parse_item_list(data.get("owned_items", []))
+                
+        # Algorithmic Budget Scaling
+        if budget and len(items_to_buy) >= 2:
+            n_items = len(items_to_buy)
+            max_cap = 0.7 if n_items == 2 else (1.4 / n_items)
+            category_weights = {"jeans": 1.0, "hoodie": 0.9, "joggers": 0.8, "shirt": 0.6, "t-shirt": 0.5, "sliders": 0.3}
+            
+            for item in items_to_buy:
+                if not item.max_price:
+                    weight = category_weights.get(item.category.value, 0.5)
+                    # Scale based on boundary * weight, bounded at absolute max
+                    item.max_price = round(budget * min(max_cap, weight))
 
-        def safe_enum(enum_class, val, default):
-            if val and val in [e.value for e in enum_class]:
-                return val
-            return default.value
+        # Complementary Rule Engine
+        if owned_items and not items_to_buy:
+            for owned in owned_items:
+                # Basic color wheel contrast rules
+                target_cat = CategoryEnum.JEANS if owned.category == CategoryEnum.TSHIRT else CategoryEnum.TSHIRT
+                target_color = ColorEnum.GREY if owned.color == ColorEnum.BLACK else ColorEnum.BEIGE
+                
+                comp_item = CanonicalShoppingQuery(
+                    original_prompt=user_prompt,
+                    cleaned_keywords="",
+                    category=target_cat,
+                    color=target_color
+                )
+                items_to_buy.append(comp_item)
 
-        canonical = CanonicalShoppingQuery(
-            original_prompt=user_prompt,
-            cleaned_keywords=parsed_raw.cleaned_query or cleaned_prompt,
-            gender=safe_enum(GenderEnum, parsed_raw.gender, GenderEnum.MEN),
-            category=safe_enum(CategoryEnum, parsed_raw.category, CategoryEnum.TSHIRT),
-            color=safe_enum(ColorEnum, parsed_raw.color, ColorEnum.ANY),
-            design=safe_enum(DesignEnum, parsed_raw.design, DesignEnum.ANY),
-            fit=safe_enum(FitEnum, parsed_raw.fit, FitEnum.ANY),
-            sleeve=safe_enum(SleeveEnum, parsed_raw.sleeve, SleeveEnum.ANY),
-            fabric=FabricEnum.ANY, # fallback doesn't parse this yet
-            neck=NeckEnum.ANY,
-            occasion=OccasionEnum.ANY,
-            fandom=safe_enum(FandomEnum, parsed_raw.fandom, FandomEnum.NONE),
-            size=parsed_raw.size,
-            quantity=parsed_raw.quantity or 1,
-            max_price=parsed_raw.max_price,
-            min_rating=parsed_raw.min_rating,
-            fast_shipping_requested=parsed_raw.fast_shipping_requested
-        )
-        return canonical, "⚙️ Normalized by Fallback Rules"
+        # Fallback if empty
+        if not items_to_buy and not owned_items:
+            self.last_model_used = "Rule Engine"
+            parsed_raw = parse_user_intent(cleaned_prompt)
+            
+            def safe_enum(enum_class, val, default):
+                if val and val in [e.value for e in enum_class]:
+                    return val
+                return default.value
+
+            canonical = CanonicalShoppingQuery(
+                original_prompt=user_prompt,
+                cleaned_keywords=parsed_raw.cleaned_query or cleaned_prompt,
+                gender=safe_enum(GenderEnum, parsed_raw.gender, GenderEnum.MEN),
+                category=safe_enum(CategoryEnum, parsed_raw.category, CategoryEnum.TSHIRT),
+                color=safe_enum(ColorEnum, parsed_raw.color, ColorEnum.ANY),
+                design=safe_enum(DesignEnum, parsed_raw.design, DesignEnum.ANY),
+                fit=safe_enum(FitEnum, parsed_raw.fit, FitEnum.ANY),
+                sleeve=safe_enum(SleeveEnum, parsed_raw.sleeve, SleeveEnum.ANY),
+                fabric=FabricEnum.ANY,
+                neck=NeckEnum.ANY,
+                occasion=OccasionEnum.ANY,
+                fandom=safe_enum(FandomEnum, parsed_raw.fandom, FandomEnum.NONE),
+                size=parsed_raw.size,
+                quantity=parsed_raw.quantity or 1,
+                max_price=parsed_raw.max_price,
+                min_rating=parsed_raw.min_rating,
+                fast_shipping_requested=parsed_raw.fast_shipping_requested
+            )
+            items_to_buy.append(canonical)
+            
+        multi_query = MultiShoppingQuery(original_prompt=user_prompt, items_to_buy=items_to_buy, owned_items=owned_items)
+        return multi_query, f"🧠 Normalized by {self.last_model_used}"
 
     # ── Stage 3: Candidate Relevance Evaluation ───────────────────────────────
 
@@ -440,7 +508,8 @@ class AgentBrain:
         candidates: List[Product],
         canonical: Optional["CanonicalShoppingQuery"] = None,
         vqa_strict_filter: bool = False,
-        enable_vqa_scanner: bool = True
+        enable_vqa_scanner: bool = True,
+        truth_hierarchy: bool = True
     ) -> Tuple[List[Product], List[ProductRelevanceEvaluation]]:
         """LLM QA: Verifies retrieved products against user intent. Rejects false positives.
 
@@ -475,7 +544,7 @@ class AgentBrain:
         if pos_signals:
             constraint_lines.append(f"POSITIVE REQUIREMENTS (must be present for a high match_score): {', '.join(pos_signals)}")
 
-        if canonical and canonical.specific_visual_intent:
+        if canonical and canonical.has_visual_intent:
             constraint_lines.append(
                 "WARNING: A specific visual intent was provided. DO NOT reject products (score < 0.5) just because their text doesn't describe the exact visual details. "
                 "If the product matches the broader category/fandom, score it >= 0.5 so it survives to be visually scanned."
@@ -503,6 +572,15 @@ class AgentBrain:
             }
             for p in candidates
         ]
+        rule_block = (
+            "  - If the user asked for a specific character/theme (e.g. Batman), a shirt without any Batman reference scores <= 0.3.\n"
+            "  - If the user's prompt mentions a specific design feature (e.g. 'logo', 'illustration', 'bold text'), score products that clearly match HIGHER and products that clearly DON'T match LOWER.\n"
+            "  - If a product title/description contains a HARD NEGATION keyword listed below, it MUST score <= 0.15 and is_relevant=false.\n"
+            "  - Broad queries (e.g. 'black t-shirt') should accept extras like oversized, graphic print — do NOT penalise them.\n"
+        )
+
+        if truth_hierarchy:
+            rule_block += "  - TRUTH HIERARCHY: The Product Title is the absolute source of truth. If the Title explicitly contains a matching feature (e.g., 'Polo', 'Oversized') but the backend specs/metadata contradict it (e.g., 'Round Neck', 'Regular Fit'), you MUST trust the Title and score it as a match. Do not penalize for backend metadata errors if the Title is correct.\n"
 
         system = (
             "You are a precision e-commerce ranking and filtering agent for an Indian fashion store.\n"
@@ -514,11 +592,7 @@ class AgentBrain:
             "  - 0.5–0.69: Partial match — satisfies category/gender but misses some specifics.\n"
             "  - 0.0–0.49: REJECT — contradicts an explicit requirement. Set is_relevant=false.\n\n"
             "## Hard Rules\n"
-            "  - If the user asked for a specific character/theme (e.g. Batman), a shirt without any Batman reference scores <= 0.3.\n"
-            "  - If the user's prompt mentions a specific design feature (e.g. 'logo', 'illustration', 'bold text'), "
-            "score products that clearly match HIGHER and products that clearly DON'T match LOWER.\n"
-            "  - If a product title/description contains a HARD NEGATION keyword listed below, it MUST score <= 0.15 and is_relevant=false.\n"
-            "  - Broad queries (e.g. 'black t-shirt') should accept extras like oversized, graphic print — do NOT penalise them.\n\n"
+            f"{rule_block}"
             f"## Extracted Constraints\n{constraint_block}\n\n"
             "Output ONLY valid JSON:\n"
             "{\n"
@@ -546,7 +620,7 @@ class AgentBrain:
                     # ---------------------------------------------------------
                     # VQA Scanning Phase (if visual intent is provided)
                     # ---------------------------------------------------------
-                    if enable_vqa_scanner and canonical and canonical.specific_visual_intent:
+                    if enable_vqa_scanner and canonical and canonical.has_visual_intent:
                         print(f"[Brain] Executing Exhaustive VQA Scanning for: {canonical.specific_visual_intent}")
                         vqa_prompt = (
                             f"The user has a highly specific visual requirement for this clothing item: '{canonical.specific_visual_intent}'.\n"
@@ -638,4 +712,49 @@ class AgentBrain:
                 reason="LLM unavailable — passed attribute pre-filters",
             ))
         return candidates, evaluations
+    def compare_products(self, products: List[Product]) -> Optional['ProductComparison']:
+        """Stage 4: LLM-powered detailed comparison matrix for selected items."""
+        from src.agent.state import ProductComparison
+        if not products:
+            return None
+        
+        prod_summaries = []
+        for i, p in enumerate(products):
+            prod_summaries.append({
+                "item_index": i + 1,
+                "title": p.title,
+                "price": p.price,
+                "rating": f"{p.rating} ({p.review_count} reviews)",
+                "materials": p.specs.get("fabric", "Unknown"),
+                "shipping": f"{getattr(p, 'shipping_days', 'Unknown')} days",
+                "description": (p.rich_description or "")[:400]
+            })
+            
+        system = (
+            "You are an expert personal stylist and e-commerce assistant.\n"
+            "The user has selected multiple items to compare.\n"
+            "Your task is to provide a highly structured, objective, and stylistic comparison.\n"
+            "Output ONLY valid JSON matching this structure exactly:\n"
+            "{\n"
+            '  "quick_summary": "2 sentences summarizing the trade-offs",\n'
+            '  "feature_matrix": [\n'
+            '      {"feature_name": "Price", "product_values": {"Exact Product Title A": "$50", "Exact Product Title B": "$60"}}\n'
+            '  ],\n'
+            '  "pros_and_cons": [\n'
+            '      {"product_title": "Exact Product Title A", "pros": ["...", "..."], "cons": ["...", "..."]}\n'
+            '  ],\n'
+            '  "stylist_recommendation": {"Best for Value": "Product A because...", "Best for Premium Quality": "Product B because..."}\n'
+            "}"
+        )
+        msg = f"Compare these items:\n{json.dumps(prod_summaries, indent=2)}"
+        
+        raw = self._call_llm(msg, system)
+        if raw:
+            parsed = self._extract_json(raw)
+            if parsed:
+                try:
+                    return ProductComparison(**parsed)
+                except Exception as e:
+                    print(f"[Brain] Error parsing ProductComparison: {e}")
+        return None
 
