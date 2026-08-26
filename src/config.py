@@ -75,7 +75,7 @@ class AgentConfig(BaseModel):
     )
     currency: str = DEFAULT_CURRENCY
     allowed_merchants: List[str] = Field(default_factory=lambda: list(DEFAULT_ALLOWED_MERCHANTS))
-    max_search_results: int = 5
+    max_search_results: int = 21
     
     # Enrichment Settings
     enable_deep_enrichment: bool = Field(
@@ -87,12 +87,16 @@ class AgentConfig(BaseModel):
         description="Maximum number of products to deeply enrich. Limits API calls."
     )
     vqa_strict_filter: bool = Field(
-        default=False,
+        default=True,
         description="If True, VQA only scans products that perfectly match text constraints. If False, scans partial matches too."
     )
     enable_vqa_scanner: bool = Field(
         default=True,
         description="Master switch to enable or disable the VQA image scanner pipeline."
+    )
+    truth_hierarchy: bool = Field(
+        default=True,
+        description="If True, instructs the LLM to prioritize the Product Title over contradicting backend specs."
     )
     
     # Logistics Settings

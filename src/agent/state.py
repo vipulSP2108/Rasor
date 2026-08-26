@@ -142,6 +142,17 @@ class CanonicalShoppingQuery(BaseModel):
     min_rating: Optional[float] = Field(default=None, description="Minimum review rating requested")
     negative_keywords: List[str] = Field(default_factory=list, description="Keywords explicitly excluded by user")
 
+    @property
+    def has_visual_intent(self) -> bool:
+        if not self.specific_visual_intent:
+            return False
+        val = str(self.specific_visual_intent).lower().strip()
+        return val not in ["", "none", "null", "n/a", "not specified", "false"]
+class MultiShoppingQuery(BaseModel):
+    """A collection of queries representing a multi-item outfit or bundle request."""
+    original_prompt: str
+    items_to_buy: List[CanonicalShoppingQuery] = Field(default_factory=list, description="Target items to purchase")
+    owned_items: List[CanonicalShoppingQuery] = Field(default_factory=list, description="Items the user already owns to match against")
 
 # ------------------------------------------------------------------------------
 # 3. Product Model & Relevance Assessment
@@ -177,6 +188,22 @@ class ProductRelevanceEvaluation(BaseModel):
     is_relevant: bool = Field(..., description="True if product satisfies user intent, False if false positive")
     match_score: float = Field(..., ge=0.0, le=1.0, description="Relevance score from 0.0 to 1.0")
     reason: str = Field(..., description="Brief explanation for accept or reject")
+
+
+class FeatureComparisonRow(BaseModel):
+    feature_name: str = Field(..., description="E.g., Price, Rating, Materials, Shipping Speed, Style Vibe")
+    product_values: Dict[str, str] = Field(..., description="Mapping from product title to feature value")
+
+class ProductProsCons(BaseModel):
+    product_title: str = Field(..., description="Exact product title")
+    pros: List[str] = Field(default_factory=list, description="List of pros")
+    cons: List[str] = Field(default_factory=list, description="List of cons")
+
+class ProductComparison(BaseModel):
+    quick_summary: str = Field(..., description="2 sentences summarizing the trade-offs")
+    feature_matrix: List[FeatureComparisonRow] = Field(..., description="List of comparative features")
+    pros_and_cons: List[ProductProsCons] = Field(..., description="Pros and cons per product")
+    stylist_recommendation: Dict[str, str] = Field(..., description="Category (e.g. 'Best for Value', 'Best for Premium Quality') mapped to the recommendation text")
 
 
 # ------------------------------------------------------------------------------

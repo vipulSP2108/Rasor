@@ -214,6 +214,7 @@
                 if (e.data.size > 0) audioChunks.push(e.data);
             };
             mediaRecorder.onstop = async () => {
+                isRecording = false;
                 if (audioChunks.length > 0 && isListening) {
                     const blob = new Blob(audioChunks, { type: 'audio/webm' });
                     const reader = new FileReader();
@@ -257,6 +258,7 @@
                 // Silence detected
                 if (hasSpoken && !silenceTimer && isRecording) {
                     silenceTimer = setTimeout(() => {
+                        silenceTimer = null;
                         // User paused for 3 seconds! Stop recording and send chunk.
                         if (mediaRecorder.state === "recording") {
                             mediaRecorder.stop(); // This triggers onstop, sends data, and restarts
