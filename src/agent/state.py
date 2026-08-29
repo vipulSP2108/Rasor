@@ -225,8 +225,28 @@ class CartItem(BaseModel):
 
 class CartStatus(str, Enum):
     ACTIVE = "active"
+    PROPOSED = "proposed"
+    CONFIRMED = "confirmed"
     LOCKED = "locked"
     CHECKED_OUT = "checked_out"
+    PAID = "paid"
+    FAILED = "failed"
+
+class MandateStatus(str, Enum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    REVOKED = "revoked"
+
+class Mandate(BaseModel):
+    mandate_id: str
+    cart_id: str
+    max_amount: float
+    currency: str = "USD"
+    status: MandateStatus = MandateStatus.PENDING
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    approved_at: Optional[datetime] = None
+    saved_token_id: Optional[str] = None
 
 
 class Cart(BaseModel):

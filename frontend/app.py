@@ -31,6 +31,12 @@ importlib.reload(src.agent.offers)
 importlib.reload(src.data.bewakoof_api)
 importlib.reload(src.data.shopify_api)
 
+try:
+    import src.agent.checkout
+    importlib.reload(src.agent.checkout)
+except ImportError:
+    pass
+
 from src.config import (
     AgentConfig,
     ExecutionMode,
@@ -75,7 +81,7 @@ st.set_page_config(
 # 1. State Management (Decoupled Session State)
 # ------------------------------------------------------------------------------
 # Hotfix for backward compatibility with active session state (Pydantic blocks dynamic field assignment)
-if "config" in st.session_state and (not hasattr(st.session_state.config, 'truth_hierarchy') or not hasattr(st.session_state.config, 'enable_offer_engine')):
+if "config" in st.session_state and (not hasattr(st.session_state.config, 'truth_hierarchy') or not hasattr(st.session_state.config, 'enable_offer_engine') or not hasattr(st.session_state.config, 'demo_mode') or not hasattr(st.session_state.config, 'customer_email') or st.session_state.config.currency != "INR"):
     del st.session_state["config"]
 
 if "config" not in st.session_state:
@@ -102,6 +108,58 @@ if "last_status" not in st.session_state:
 # Cart Tracking State
 if "shopify_cart_id" not in st.session_state:
     st.session_state.shopify_cart_id = None
+
+# ------------------------------------------------------------------------------
+# Auto-Sync Payment Redirect Handler
+# ------------------------------------------------------------------------------
+if "rzp_payment_id" in st.query_params and "rzp_order_id" in st.query_params:
+    pid = st.query_params.get("rzp_payment_id")
+    oid = st.query_params.get("rzp_order_id")
+    flow = st.query_params.get("flow")
+    
+    # Clear params immediately so we don't trigger this again on reload
+    st.query_params.clear()
+    
+    if "pending_cart" in st.session_state and "pending_total" in st.session_state:
+        agent = CheckoutAgent()
+        expected_oid = st.session_state.get(f"pending_{flow}_sync") if flow else None
+        
+        if expected_oid and agent.verify_payment(pid, expected_oid):
+            from src.data.shopify_admin import ShopifyAdminProvider
+            admin_api = ShopifyAdminProvider()
+            sync_res = admin_api.create_paid_order(
+                st.session_state.pending_cart.items, 
+                st.session_state.pending_cart.currency, 
+                st.session_state.pending_total, 
+                expected_oid,
+                email=st.session_state.config.customer_email
+            )
+            
+            if sync_res.get("success"):
+                st.session_state.payment_success_message = f"✅ Verified! Order '{sync_res.get('order_name')}' seamlessly pushed to Shopify backend."
+                if flow == "demo1":
+                    import uuid
+                    st.session_state.razorpay_saved_token = f"tok_mock_{uuid.uuid4().hex[:8]}"
+                
+                # Clear cart on success
+                st.session_state.shopify_cart_id = None
+                st.session_state.cart_quantity = 0
+                st.session_state.cart_total_cost = 0.0
+                st.session_state.items_in_cart = {}
+            else:
+                st.session_state.payment_error_message = f"Failed to sync to Shopify: {sync_res.get('error')}"
+        else:
+            st.session_state.payment_error_message = "❌ Razorpay rejected verification! The payment ID is invalid, unpaid, or does not belong to this order."
+
+if "payment_success_message" in st.session_state:
+    st.success(st.session_state.payment_success_message)
+    st.balloons()
+    del st.session_state.payment_success_message
+
+if "payment_error_message" in st.session_state:
+    st.error(st.session_state.payment_error_message)
+    del st.session_state.payment_error_message
+
 if "shopify_checkout_url" not in st.session_state:
     st.session_state.shopify_checkout_url = None
 if "cart_quantity" not in st.session_state:
@@ -354,19 +412,247 @@ def cart_page_dialog():
     </div>
     """, unsafe_allow_html=True)
     
-    colA, colB = st.columns([1, 1])
-    with colA:
-        if st.button("🗑️ Empty Cart", use_container_width=True):
-            st.session_state.shopify_cart_id = None
-            st.session_state.cart_quantity = 0
-            st.session_state.cart_total_cost = 0.0
-            st.session_state.items_in_cart = {}
+    st.divider()
+    
+    from src.agent.checkout import CheckoutAgent
+    from src.agent.state import Cart, CartItem
+    import uuid
+    
+    # Build a temporary Cart object for CheckoutAgent and a Cart Permalink for Native Shopify checkout
+    cart_items = []
+    permalink_parts = []
+    for cid, cqty in st.session_state.items_in_cart.items():
+        cp = prod_lookup.get(cid)
+        if cp:
+            cart_items.append(CartItem(product_id=cid, title=cp.title, merchant=cp.merchant, unit_price=cp.price, quantity=cqty))
+            v_ids = cp.specs.get("variant_ids", {})
+            if v_ids:
+                # Get the default variant ID (e.g. gid://shopify/ProductVariant/44556677)
+                v_gid = list(v_ids.values())[0]
+                v_num = v_gid.split("/")[-1]
+                permalink_parts.append(f"{v_num}:{cqty}")
+                
+    temp_cart = Cart(
+        cart_id=st.session_state.shopify_cart_id or f"cart_{uuid.uuid4().hex[:8]}",
+        merchant="Rasor Demo Store",
+        items=cart_items,
+        currency=st.session_state.config.currency
+    )
+    temp_cart.recalculate()
+    temp_cart.final_total = final_total # Override with offer engine final total
+
+    # -------------------------------------------------------------------------
+    # STANDARD ONE-OFF CHECKOUT
+    # -------------------------------------------------------------------------
+    st.markdown("### 💳 Standard Checkout")
+    st.info("Use this to test a normal, non-recurring Razorpay transaction without TokenHQ.")
+    
+    if st.button("Pay via Standard Checkout", type="secondary", use_container_width=True):
+        with st.spinner("Creating standard Razorpay Order..."):
+            from src.agent.checkout import CheckoutAgent
+            agent = CheckoutAgent()
+            # Omit customer_id so the backend order skips TokenHQ token mapping
+            result = agent.create_order(temp_cart, customer_id=None)
+            
+            if result.get("success"):
+                st.success(f"Standard Order created! Order ID: {result['order_id']}")
+                import streamlit.components.v1 as components
+                html_code = f"""
+                <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+                <script>
+                var options = {{
+                    "key": "{result['key_id']}",
+                    "amount": "{result['amount']}",
+                    "currency": "{result['currency']}",
+                    "name": "Rasor Commerce Demo",
+                    "description": "Standard One-Off Purchase",
+                    "order_id": "{result['order_id']}",
+                    "prefill": {{
+                        "name": "Standard User",
+                        "email": "{st.session_state.config.customer_email}",
+                        "contact": "9999999999"
+                    }},
+                    "handler": function (response){{
+                        document.getElementById("status").innerHTML = "<div style='color:green;font-family:sans-serif;'>✅ Payment Complete! Auto-syncing...</div>";
+                        window.parent.location.search = "?rzp_payment_id=" + response.razorpay_payment_id + "&rzp_order_id=" + response.razorpay_order_id + "&flow=standard";
+                    }},
+                    "theme": {{ "color": "#3399cc" }}
+                }};
+                var rzp = new Razorpay(options);
+                rzp.open();
+                </script>
+                <div id="status" style="padding: 20px; text-align: center; font-size: 1.2em;">Opening Razorpay Standard Checkout...</div>
+                """
+                components.html(html_code, height=600)
+                st.session_state.pending_standard_sync = result['order_id']
+                st.session_state.pending_cart = temp_cart
+                st.session_state.pending_total = final_total
+            else:
+                st.error(f"Failed to create standard order: {result.get('error')}")
+
+    st.divider()
+
+    # -------------------------------------------------------------------------
+    # MANDATE & AGENTIC CHECKOUT FLOW
+    # -------------------------------------------------------------------------
+    st.markdown("### 🔒 Agentic Checkout (Track 01)")
+    
+    demo_choice = st.radio(
+        "Transaction Flow",
+        options=["Demo 1: Initial Purchase (Human Present)", "Demo 2: Repeat Purchase (Autonomous S2S)"],
+        index=0 if st.session_state.config.demo_mode == "human_present" else 1,
+        help="Switches between the AP2 standard checkout with Razorpay popup, and the UAP autonomous S2S capture."
+    )
+    if "Initial Purchase" in demo_choice:
+        if st.session_state.config.demo_mode != "human_present":
+            st.session_state.config.demo_mode = "human_present"
             st.rerun()
-    with colB:
-        if st.session_state.shopify_checkout_url:
-            st.link_button("Proceed to Checkout", url=st.session_state.shopify_checkout_url, type="primary", use_container_width=True)
-        else:
-            st.button("Proceed to Checkout (Syncing...)", type="primary", use_container_width=True, disabled=True)
+    else:
+        if st.session_state.config.demo_mode != "autonomous_s2s":
+            st.session_state.config.demo_mode = "autonomous_s2s"
+            st.rerun()
+
+
+    # -------------------------------------------------------------------------
+    # NATIVE SHOPIFY CHECKOUT (PERMALINK)
+    # -------------------------------------------------------------------------
+    if permalink_parts:
+        cart_permalink = f"https://rasor-test-store-1.myshopify.com/cart/{','.join(permalink_parts)}"
+        st.markdown("### 🛒 Native Shopify Checkout")
+        st.info("Because Headless Carts are isolated from your browser session, clicking the button below uses Shopify's Cart Permalink API to inject these exact items directly into your native web storefront cart.")
+        st.link_button("🛍️ Checkout via Native Shopify Storefront", url=cart_permalink, type="secondary", use_container_width=True)
+        st.divider()
+
+    if st.session_state.config.demo_mode == "human_present":
+        # Demo 1: Initial Purchase (Human Present)
+        st.markdown(f"""
+        <div style='background: rgba(16, 185, 129, 0.1); border: 1px solid #10b981; border-radius: 8px; padding: 12px; margin-bottom: 16px;'>
+            <strong>📝 Mandate Authorization</strong><br/>
+            I explicitly authorize Rasor Agent to create an order for up to <strong>{curr_sym}{final_total:.0f}</strong> on my behalf.
+            I will complete the payment on the merchant's secure page, which will save a token for future autonomous purchases.
+        </div>
+        """, unsafe_allow_html=True)
+        
+        colA, colB = st.columns([1, 1.5])
+        with colA:
+            if st.button("🗑️ Empty Cart", use_container_width=True):
+                st.session_state.shopify_cart_id = None
+                st.session_state.cart_quantity = 0
+                st.session_state.cart_total_cost = 0.0
+                st.session_state.items_in_cart = {}
+                st.rerun()
+        with colB:
+            if st.button("Approve Mandate & Pay", type="primary", use_container_width=True):
+                with st.spinner("Agent is creating Razorpay Order..."):
+                    agent = CheckoutAgent()
+                    customer_id = agent.create_customer(st.session_state.config.customer_email)
+                    st.session_state.razorpay_customer_id = customer_id
+                    
+                    agent.record_mandate_approval(temp_cart.cart_id, final_total)
+                    result = agent.create_order(temp_cart, customer_id)
+                    
+                    if result.get("success"):
+                        st.success(f"Order created! Order ID: {result['order_id']}")
+                        
+                        # Generate Razorpay Checkout HTML
+                        # In Streamlit we can use components.html to show the Razorpay popup
+                        import streamlit.components.v1 as components
+                        
+                        html_code = f"""
+                        <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+                        <script>
+                        var options = {{
+                            "key": "{result['key_id']}",
+                            "amount": "{result['amount']}",
+                            "currency": "{result['currency']}",
+                            "name": "Rasor Commerce Demo",
+                            "description": "Initial Setup Purchase",
+                            "order_id": "{result['order_id']}",
+                            "prefill": {{
+                                "name": "Agentic User",
+                                "email": "{st.session_state.config.customer_email}",
+                                "contact": "9999999999"
+                            }},
+                            "handler": function (response){{
+                                document.getElementById("status").innerHTML = "<div style='color:green;font-family:sans-serif;'>✅ Payment Authorized! Auto-syncing...</div>";
+                                window.parent.location.search = "?rzp_payment_id=" + response.razorpay_payment_id + "&rzp_order_id=" + response.razorpay_order_id + "&flow=demo1";
+                            }},
+                            "theme": {{
+                                "color": "#10b981"
+                            }}
+                        }};
+                        var rzp1 = new Razorpay(options);
+                        rzp1.on('payment.failed', function (response){{
+                            alert("Payment Failed! Reason: " + response.error.description);
+                            document.getElementById("status").innerHTML = "<div style='color:red;font-family:sans-serif;'>❌ Payment Failed</div>";
+                        }});
+                        document.addEventListener("DOMContentLoaded", function() {{
+                            rzp1.open();
+                        }});
+                        </script>
+                        <div id="status" style="font-family:sans-serif; text-align: center; margin-top: 20px;">
+                            <strong>Secure checkout opened.</strong><br/>
+                            <span style="font-size: 0.9em; color: #666;">(Please use the payment window above)</span>
+                        </div>
+                        """
+                        components.html(html_code, height=600, scrolling=True)
+                        st.session_state.pending_demo1_sync = result['order_id']
+                        st.session_state.pending_cart = temp_cart
+                        st.session_state.pending_total = final_total
+                    else:
+                        st.error(f"Failed to create order: {result.get('error')}")
+
+    else:
+        # Demo 2: Repeat Purchase (Autonomous S2S)
+        st.markdown(f"""
+        <div style='background: rgba(99, 102, 241, 0.1); border: 1px solid #6366f1; border-radius: 8px; padding: 12px; margin-bottom: 16px;'>
+            <strong>🤖 Autonomous S2S Capture</strong><br/>
+            This demonstrates an autonomous repeat purchase. The agent executes this <strong>server-to-server</strong> using the saved token from your previous mandate, provided it is under your spend limit.<br/><br/>
+            <span style='font-size: 0.9em; color: #a5b4fc;'>
+            <strong>Note on Implementation:</strong> Because NPCI's UAP (Unified AutoPay) and Razorpay's UPI Reserve Pay are still closed-pilot, we demonstrate the identical trust pattern (one-time consent, then bounded autonomous execution) by simulating the final S2S network call. The architecture is rail-agnostic; swapping the simulated mock for real UPI once that pilot opens is a configuration change, not a redesign.
+            </span>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        colA, colB = st.columns([1, 1.5])
+        with colA:
+            if st.button("🗑️ Empty Cart", use_container_width=True):
+                st.session_state.shopify_cart_id = None
+                st.session_state.cart_quantity = 0
+                st.session_state.cart_total_cost = 0.0
+                st.session_state.items_in_cart = {}
+                st.rerun()
+        with colB:
+            if st.button("Execute Autonomous Payment", type="primary", use_container_width=True):
+                with st.spinner("Agent is capturing S2S payment and syncing to Shopify..."):
+                    agent = CheckoutAgent()
+                    
+                    token_id = st.session_state.get("razorpay_saved_token") or "token_s2s_mock_123"
+                    customer_id = st.session_state.get("razorpay_customer_id") or "cust_s2s_mock_456"
+                    
+                    if token_id == "token_s2s_mock_123":
+                        st.warning("No real token found in session. Using mock token (S2S will likely fail unless properly tokenized first via Demo 1).")
+                        
+                    result = agent.capture_saved_token(temp_cart, token_id, customer_id)
+                    
+                    if result.get("success"):
+                        # Auto-sync to Shopify since Python knows it succeeded
+                        from src.data.shopify_admin import ShopifyAdminProvider
+                        admin_api = ShopifyAdminProvider()
+                        sync_res = admin_api.create_paid_order(
+                            temp_cart.items, 
+                            temp_cart.currency, 
+                            final_total, 
+                            result['payment_id'],
+                            email=st.session_state.config.customer_email
+                        )
+                        if sync_res.get("success"):
+                            st.success(f"✅ S2S Capture Successful! Shopify Order: {sync_res.get('order_name')}")
+                            st.balloons()
+                        else:
+                            st.warning(f"S2S Capture succeeded, but Shopify Sync failed: {sync_res.get('error')}")
+                    else:
+                        st.error(f"S2S Capture Failed: {result.get('error')}")
 
 @st.dialog("🛒 Add to Cart")
 def add_to_cart_dialog(product):
@@ -592,6 +878,15 @@ with st.sidebar:
     st.divider()
     
     # Execution Mode (Dev vs Live)
+    st.divider()
+    
+    st.subheader("👤 Customer Details")
+    st.session_state.config.customer_email = st.text_input(
+        "Shopify Account Email",
+        value=st.session_state.config.__dict__.get("customer_email", "vipulapatil21@gmail.com"), #agentic@rasor.test
+        help="Enter the email associated with your Shopify customer account so orders appear in your order history."
+    )
+    
     mode_choice = st.radio(
         "Execution Mode",
         options=["Live (Direct Store API / Scraper)", "Dev (Local Mock Data)"],
@@ -612,16 +907,16 @@ with st.sidebar:
             st.session_state.config.currency = "INR"
         elif "Google" in source_choice:
             st.session_state.config.data_source = DataSourceType.GOOGLE_SHOPPING_SCRAPER
-            st.session_state.config.currency = "USD"
+            st.session_state.config.currency = "INR"
         elif "Shopify" in source_choice:
             st.session_state.config.data_source = DataSourceType.SHOPIFY_STOREFRONT_LIVE_API
-            st.session_state.config.currency = "USD"
+            st.session_state.config.currency = "INR"
         else:
             st.session_state.config.data_source = DataSourceType.MCP_SERVER
-            st.session_state.config.currency = "USD"
+            st.session_state.config.currency = "INR"
     else:
         st.session_state.config.data_source = DataSourceType.DEV_MOCK
-        st.session_state.config.currency = "USD"
+        st.session_state.config.currency = "INR"
 
     st.divider()
     st.subheader("🛡️ Financial Guardrails")
@@ -716,6 +1011,54 @@ with st.sidebar:
         options=["openai/gpt-oss-20b", "qwen/qwen3.6-27b", "groq/compound-mini"],
         index=0
     )
+
+    st.divider()
+    st.subheader("🛍️ Shopify Order History")
+    if st.button("Refresh Orders", use_container_width=True):
+        st.session_state.force_order_refresh = True
+        
+    # Lazy load orders
+    if st.session_state.get("force_order_refresh") or "recent_shopify_orders" not in st.session_state:
+        from src.data.shopify_admin import ShopifyAdminProvider
+        admin_api = ShopifyAdminProvider()
+        st.session_state.recent_shopify_orders = admin_api.get_recent_orders(limit=5)
+        st.session_state.force_order_refresh = False
+        
+    orders = st.session_state.recent_shopify_orders
+    if orders:
+        with st.expander(f"View Recent Orders ({len(orders)})", expanded=False):
+            for i, order in enumerate(orders):
+                st.markdown(f"**{order.get('name', 'Order')}** - {order.get('financial_status', 'unknown').title()}")
+                st.caption(f"{order.get('created_at')} | {order.get('total_price')} {order.get('currency')}")
+                for item in order.get('line_items', []):
+                    st.markdown(f"- {item.get('quantity')}x {item.get('title')}")
+                if i < len(orders) - 1:
+                    st.divider()
+    else:
+        st.info("No orders found or error fetching.")
+
+    st.divider()
+    st.subheader("📜 Audit Ledger (Track 01)")
+    from src.data.ledger import AuditLedger
+    ledger = AuditLedger()
+    entries = ledger.get_entries()
+    
+    if entries:
+        with st.expander(f"View Ledger ({len(entries)} events)", expanded=False):
+            for i, entry in enumerate(reversed(entries)):
+                st.markdown(f"**{entry['event_type']}**")
+                st.caption(f"{entry['timestamp']}")
+                st.json(entry['details'])
+                if i < len(entries) - 1:
+                    st.divider()
+        
+        if st.button("Clear Ledger", use_container_width=True):
+            import os
+            if os.path.exists(ledger.file_path):
+                os.remove(ledger.file_path)
+            st.rerun()
+    else:
+        st.info("Ledger is currently empty.")
 
 # ------------------------------------------------------------------------------
 # 3. Main Interface & Natural Language Prompt

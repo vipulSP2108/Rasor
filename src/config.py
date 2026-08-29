@@ -8,6 +8,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Global variables loaded once
+RAZORPAY_KEY_ID = os.getenv("TEST_API_KEY")
+RAZORPAY_KEY_SECRET = os.getenv("TEST_KEY_SECRET")
+
 
 class ExecutionMode(str, Enum):
     DEV = "dev"       # Local structured mock data (fast, deterministic)
@@ -38,9 +42,9 @@ class ModelProvider(str, Enum):
 # ==============================================================================
 # System Defaults & Constants
 # ==============================================================================
-DEFAULT_MAX_COST_HITL: float = 100.00
-DEFAULT_MAX_BUDGET: float = 500.00
-DEFAULT_CURRENCY: str = "USD"
+DEFAULT_MAX_COST_HITL: float = 1500.00
+DEFAULT_MAX_BUDGET: float = 3000.00
+DEFAULT_CURRENCY: str = "INR"
 DEFAULT_TAX_RATE: float = 0.08
 DEFAULT_SHIPPING_FLAT_RATE: float = 5.00
 DEFAULT_FREE_SHIPPING_THRESHOLD: float = 50.00
@@ -113,6 +117,22 @@ class AgentConfig(BaseModel):
     tts_voice: str = Field(
         default="Samantha",
         description="The native macOS voice used for local Text-to-Speech playback."
+    )
+    
+    # Track 01 Demo Modes
+    demo_mode: str = Field(
+        default="human_present",
+        description="Tracks whether we are in 'human_present' (initial checkout) or 'autonomous_s2s' (repeat purchase) demo mode."
+    )
+    
+    customer_email: str = Field(
+        default="agentic@rasor.test",
+        description="The customer email to link Shopify orders to."
+    )
+    
+    ledger_file_path: str = Field(
+        default="scratch/audit_ledger.jsonl",
+        description="Path to the append-only JSONL ledger file."
     )
     
     # Semantic Pop-Culture Engine
