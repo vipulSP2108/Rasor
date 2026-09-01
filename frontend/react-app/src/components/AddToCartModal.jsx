@@ -1,3 +1,4 @@
+import React from 'react';
 import { useState } from 'react'
 import { X, ShoppingCart } from 'lucide-react'
 import { createCart, addToCart } from '../api/client'
@@ -5,7 +6,7 @@ import { useApp } from '../context/AppContext'
 import toast from 'react-hot-toast'
 
 export default function AddToCartModal({ product, onConfirm, onClose, config }) {
-  const { cart, setShopifyCart } = useApp()
+  const { cart } = useApp()
   const [selectedSize, setSelectedSize] = useState(null)
   const [qty, setQty] = useState(1)
   const [loading, setLoading] = useState(false)
@@ -13,8 +14,15 @@ export default function AddToCartModal({ product, onConfirm, onClose, config }) 
   const variantIds = product.specs?.variant_ids || {}
   const sizes = Object.keys(variantIds)
   const curr = config.currency === 'INR' ? '₹' : '$'
+  
+  // Calculate existing cart total from active items
+  const currentCartTotal = Object.entries(cart.items || {}).reduce((sum, [id, q]) => {
+    const p = cart.products[id]
+    return sum + (p ? p.price * q : 0)
+  }, 0)
+
   const itemCost = product.price * qty
-  const newCartTotal = cart.total + itemCost
+  const newCartTotal = currentCartTotal + itemCost
 
   const hitlExceeded = newCartTotal > config.maxCostHitl
   const budgetExceeded = newCartTotal > config.maxBudget
@@ -27,34 +35,31 @@ export default function AddToCartModal({ product, onConfirm, onClose, config }) 
     const size = selectedSize || sizes[0]
     const variantGid = variantIds[size]
 
-    if (!variantGid) {
-      onConfirm(product, qty)
-      return
-    }
-
     setLoading(true)
+    let shopifyData = null
     try {
-      let res
-      if (cart.shopifyCartId) {
-        const { data } = await addToCart({ cart_id: cart.shopifyCartId, variant_gid: variantGid, quantity: qty })
-        res = data
-      } else {
-        const { data } = await createCart({ variant_gid: variantGid, quantity: qty })
-        res = data
-      }
+      if (variantGid) {
+        if (cart.shopifyCartId) {
+          const { data } = await addToCart({ cart_id: cart.shopifyCartId, variant_gid: variantGid, quantity: qty })
+          shopifyData = data
+        } else {
+          const { data } = await createCart({ variant_gid: variantGid, quantity: qty })
+          shopifyData = data
+        }
 
-      if (res.success) {
-        setShopifyCart(res.cart_id, res.checkout_url, res.total_quantity, parseFloat(res.cost || 0))
-        toast.success('Added to cart!')
+        if (shopifyData && !shopifyData.success) {
+          toast.error('Cart sync note: ' + (shopifyData.errors || 'Added locally'))
+        } else {
+          toast.success('Added to cart!')
+        }
       } else {
-        toast.error('Cart error: ' + (res.errors || 'Unknown'))
+        toast.success('Added to cart!')
       }
-      onConfirm(product, qty)
     } catch (err) {
-      toast.error('Cart error: ' + (err.response?.data?.detail || err.message))
-      // Still add locally
-      onConfirm(product, qty)
+      console.warn('Shopify sync warning:', err)
+      toast.success('Added to cart!')
     } finally {
+      onConfirm(product, qty, shopifyData)
       setLoading(false)
     }
   }

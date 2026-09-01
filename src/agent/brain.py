@@ -217,24 +217,29 @@ class AgentBrain:
     def _call_gemini(self, prompt: str, system: str) -> Optional[str]:
         if not self.gemini_key:
             return None
-        try:
-            url = (
-                f"https://generativelanguage.googleapis.com/v1beta/models/"
-                f"{self.primary_model}:generateContent?key={self.gemini_key}"
-            )
-            payload = {
-                "contents": [{"parts": [{"text": prompt}]}],
-                "systemInstruction": {"parts": [{"text": system}]},
-                "generationConfig": {"responseMimeType": "application/json", "temperature": 0.1},
-            }
-            resp = requests.post(url, json=payload, timeout=8)
-            if resp.status_code == 200:
-                text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-                self.last_model_used = f"Google {self.primary_model}"
-                return text
-            print(f"[Brain/Gemini] HTTP {resp.status_code}: {resp.text[:150]}")
-        except Exception as e:
-            print(f"[Brain/Gemini] Error: {e}")
+        candidate_models = [self.primary_model, "gemini-3.1-flash-lite", "gemini-3.5-flash-lite"]
+        seen = set()
+        for m in candidate_models:
+            if not m or m in seen:
+                continue
+            seen.add(m)
+            try:
+                url = (
+                    f"https://generativelanguage.googleapis.com/v1beta/models/"
+                    f"{m}:generateContent?key={self.gemini_key}"
+                )
+                payload = {
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "systemInstruction": {"parts": [{"text": system}]},
+                    "generationConfig": {"responseMimeType": "application/json", "temperature": 0.1},
+                }
+                resp = requests.post(url, json=payload, timeout=8)
+                if resp.status_code == 200:
+                    text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+                    self.last_model_used = f"Google {m}"
+                    return text
+            except Exception:
+                continue
         return None
 
     def _call_gemini_vision(self, prompt: str, image_url: str) -> Optional[str]:
@@ -242,29 +247,28 @@ class AgentBrain:
         if not self.gemini_key:
             return None
         try:
-            # 1. Download image
+            # 1. Download image with strict timeout
             import base64
             headers = {
                 "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
             }
-            img_resp = requests.get(image_url, headers=headers, timeout=5)
+            img_resp = requests.get(image_url, headers=headers, timeout=3)
             if img_resp.status_code != 200:
-                print(f"[Brain/GeminiVision] Failed to download image {image_url} (HTTP {img_resp.status_code})")
                 return None
             img_b64 = base64.b64encode(img_resp.content).decode("utf-8")
             
-            # Determine mime type naively
             mime_type = "image/jpeg"
             if image_url.lower().endswith(".png"):
                 mime_type = "image/png"
             elif image_url.lower().endswith(".webp"):
                 mime_type = "image/webp"
 
-            # 2. Call Gemini
+            # 2. Call Gemini with ultra-fast vision model
+            model_to_use = "gemini-3.1-flash-lite"
             url = (
                 f"https://generativelanguage.googleapis.com/v1beta/models/"
-                f"gemini-1.5-flash:generateContent?key={self.gemini_key}"
+                f"{model_to_use}:generateContent?key={self.gemini_key}"
             )
             payload = {
                 "contents": [
@@ -282,14 +286,13 @@ class AgentBrain:
                 ],
                 "generationConfig": {"temperature": 0.1},
             }
-            resp = requests.post(url, json=payload, timeout=12)
+            resp = requests.post(url, json=payload, timeout=6)
             if resp.status_code == 200:
                 text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-                self.last_model_used = "Google gemini-1.5-flash (Vision)"
+                self.last_model_used = f"Google {model_to_use} (Vision)"
                 return text
-            print(f"[Brain/GeminiVision] HTTP {resp.status_code}: {resp.text[:150]}")
-        except Exception as e:
-            print(f"[Brain/GeminiVision] Error: {e}")
+        except Exception:
+            pass
         return None
 
     def _call_groq(self, prompt: str, system: str) -> Optional[str]:
@@ -649,28 +652,30 @@ class AgentBrain:
                             # Sort by text score to scan the most likely candidates first
                             vqa_candidates.sort(key=lambda x: float(eval_map.get(x.id, {}).get("match_score", 0.0)), reverse=True)
                         
-                        # Cap at 15 to avoid massive API delays
-                        vqa_candidates = vqa_candidates[:15]
+                        # Cap at 6 to keep response latency ultra-fast
+                        vqa_candidates = vqa_candidates[:6]
                         
-                        for p in vqa_candidates:
+                        import concurrent.futures
+                        def run_single_vqa(p):
                             img_url = p.specs.get("image_url") or p.specs.get("display_image")
-                            if img_url:
-                                vqa_raw = self._call_gemini_vision(vqa_prompt, img_url)
-                                vqa_data = self._extract_json(vqa_raw)
-                                if vqa_data:
-                                    ev_data = eval_map[p.id]
-                                    
-                                    # VQA trumps text relevance
-                                    is_vis = bool(vqa_data.get("is_visual_match", False))
-                                    ev_data["is_relevant"] = is_vis
-                                    
-                                    # Blend scores, favoring vision heavily (70/30)
-                                    text_score = float(ev_data.get("match_score", 0.5))
-                                    vis_score = float(vqa_data.get("visual_score", 0.0))
-                                    ev_data["match_score"] = (text_score * 0.3) + (vis_score * 0.7)
-                                    
-                                    vqa_reason = vqa_data.get("reason", "")
-                                    ev_data["reason"] = f"[VQA: {is_vis}] {vqa_reason}"
+                            if not img_url:
+                                return
+                            vqa_raw = self._call_gemini_vision(vqa_prompt, img_url)
+                            if not vqa_raw:
+                                return
+                            vqa_data = self._extract_json(vqa_raw)
+                            if vqa_data and p.id in eval_map:
+                                ev_data = eval_map[p.id]
+                                is_vis = bool(vqa_data.get("is_visual_match", False))
+                                ev_data["is_relevant"] = is_vis
+                                text_score = float(ev_data.get("match_score", 0.5))
+                                vis_score = float(vqa_data.get("visual_score", 0.0))
+                                ev_data["match_score"] = (text_score * 0.3) + (vis_score * 0.7)
+                                vqa_reason = vqa_data.get("reason", "")
+                                ev_data["reason"] = f"[VQA: {is_vis}] {vqa_reason}"
+
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+                            list(executor.map(run_single_vqa, vqa_candidates))
                     
                     for p in candidates:
                         ev_data = eval_map.get(p.id)

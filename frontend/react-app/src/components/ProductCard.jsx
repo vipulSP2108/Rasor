@@ -1,3 +1,4 @@
+import React from 'react';
 import { Star, ShoppingCart, Scale, Check } from 'lucide-react'
 import { useApp } from '../context/AppContext'
 

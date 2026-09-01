@@ -1,3 +1,4 @@
+import React from 'react';
 import { useState } from 'react'
 import { CreditCard, Bot, Zap } from 'lucide-react'
 import { createOrder, createMandateOrder, captureS2S, verifyPayment, syncShopify } from '../api/client'

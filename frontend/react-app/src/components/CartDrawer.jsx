@@ -1,3 +1,4 @@
+import React from 'react';
 import { useState, useEffect } from 'react'
 import { X, Minus, Plus, Trash2, ShoppingBag, ExternalLink } from 'lucide-react'
 import { useApp } from '../context/AppContext'

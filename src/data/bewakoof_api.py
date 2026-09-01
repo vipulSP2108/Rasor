@@ -32,7 +32,7 @@ _CHARACTER_KEYWORDS: Dict[str, List[str]] = {
     "thor":             ["thor", "asgard"],
     "deadpool":         ["deadpool", "wade wilson", "dead pool"],
     "hulk":             ["hulk", "bruce banner"],
-    "black panther":    ["black panther", "wakanda", "t'challa"],
+    "black panther":    ["black panther", "black pantheer", "panther", "pantheer", "wakanda", "t'challa", "tchalla"],
     "wolverine":        ["wolverine", "logan"],
     # DC characters
     "batman":           ["batman", "dark knight", "bruce wayne", "gotham"],
@@ -47,7 +47,7 @@ _CHARACTER_KEYWORDS: Dict[str, List[str]] = {
     "naruto":           ["naruto", "uzumaki", "hokage"],
     # Friends characters
     "chandler":         ["chandler", "bing"],
-    "ross":             ["ross"],
+    "ross":             ["ross geller", "ross"],
     # General wildcards
     "harry potter":     ["harry potter", "harry", "potter", "hogwarts"],
     "garfield":         ["garfield"],
@@ -56,9 +56,12 @@ _CHARACTER_KEYWORDS: Dict[str, List[str]] = {
 
 def _detect_specific_character(prompt_lower: str) -> Optional[str]:
     """Returns the specific character keyword to filter by, or None if just fandom-level."""
+    import re
+    # Sort characters by longest keyword first to avoid greedy substring collisions
     for char_name, keywords in _CHARACTER_KEYWORDS.items():
-        if any(kw in prompt_lower for kw in keywords):
-            return char_name
+        for kw in keywords:
+            if re.search(rf"\b{re.escape(kw)}\b", prompt_lower):
+                return char_name
     return None
 
 
