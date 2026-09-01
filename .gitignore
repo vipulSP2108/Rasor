@@ -26,5 +26,23 @@ src/*.md
 # IDE
 .idea/
 .vscode/
+
+# Frontend
+frontend/react-app/node_modules
+frontend/react-app/build
 scratch
 
+start.sh
+bash_setup.sh
+talk-to-rasor.sh
+test-web.sh
+src/models/kokoro
+# Frontend
+frontend/react-app/node_modules
+frontend/react-app/build
+
+start.sh
+bash_setup.sh
+talk-to-rasor.sh
+test-web.sh
+src/models/kokoro
