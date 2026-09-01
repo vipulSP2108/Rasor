@@ -274,7 +274,8 @@ class StylistAgent:
                 intent="greeting",
                 message="Hey there! 👋 I'm Rasor's AI stylist. Tell me what you're looking to shop for today and I'll help you find the best picks!",
                 ready_for_search=False,
-                updated_query=""
+                updated_query="",
+                suggested_options=["Show me men's t-shirts", "Marvel fan merch", "Surprise me 🎲"]
             )
         
         # 2. Autopilot
@@ -292,10 +293,10 @@ class StylistAgent:
         ) + " " + user_input
         
         # Detect key signals in the accumulated context
-        has_category = bool(re.search(r"\b(t-?shirt|tee|tees|hoodie|jogger|jeans|shirt|shirts|polo|trouser|shorts|sweatshirt)\b", all_user_text))
-        has_color = bool(re.search(r"\b(black|white|blue|red|green|yellow|grey|gray|navy|maroon|olive|pink|orange|dark|light)\b", all_user_text))
-        has_fit = bool(re.search(r"\b(oversized|regular|slim|polo|round neck|v.?neck|boyfriend|baggy|loose)\b", all_user_text))
-        has_gender = bool(re.search(r"\b(men|women|male|female|unisex|man|woman|guys)\b", all_user_text))
+        has_category = bool(re.search(r"\b(t-?shirts?|tees?|hoodies?|joggers?|jeans?|shirts?|polos?|trousers?|shorts?|sweatshirts?)\b", all_user_text, re.IGNORECASE))
+        has_color = bool(re.search(r"\b(black|white|blue|red|green|yellow|grey|gray|navy|maroon|olive|pink|orange|dark|light)\b", all_user_text, re.IGNORECASE))
+        has_fit = bool(re.search(r"\b(oversized|regular|slim|polo|round neck|v.?neck|boyfriend|baggy|loose)\b", all_user_text, re.IGNORECASE))
+        has_gender = bool(re.search(r"\b(men|women|male|female|unisex|man|woman|guys|mens|womens)\b", all_user_text, re.IGNORECASE))
         
         # 4. Specific enough to search
         if has_category and (has_color or has_fit):
@@ -312,21 +313,24 @@ class StylistAgent:
                 intent="clarify",
                 message="Nice! To narrow it down — are we shopping for men's or women's clothing, and what specific item are you looking for? (e.g. T-shirt, Hoodie)",
                 ready_for_search=False,
-                updated_query=""
+                updated_query="",
+                suggested_options=["Men's T-shirts", "Women's Hoodies"]
             )
         if not has_color:
             return StylistResponse(
                 intent="clarify",
                 message="I found loads of options! What color are you looking for? (Or rate your skin tone 1-10 and I'll pick a matching palette!)",
                 ready_for_search=False,
-                updated_query=""
+                updated_query="",
+                suggested_options=["Black", "White", "Navy Blue", "Skin tone 5"]
             )
         if not has_fit:
             return StylistResponse(
                 intent="clarify",
                 message="Are you going for a classic regular fit, or more of a relaxed oversized look?",
                 ready_for_search=False,
-                updated_query=""
+                updated_query="",
+                suggested_options=["Regular Fit", "Oversized Fit"]
             )
         
         # Completely unknown intent
