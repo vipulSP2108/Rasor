@@ -1,3 +1,4 @@
+import React from 'react';
 import { useState } from 'react'
 import { Search, Sliders, Grid, List, ChevronDown, ChevronUp, Package, Trash2, ChevronLeft, ChevronRight } from 'lucide-react'
 import { searchProducts } from '../api/client'

@@ -1,3 +1,4 @@
+import React from 'react';
 import { useState } from 'react'
 import { compareProducts } from '../api/client'
 import { X } from 'lucide-react'

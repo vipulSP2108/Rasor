@@ -1,3 +1,4 @@
+import React from 'react';
 import { createContext, useContext, useState, useCallback } from 'react'
 
 const AppContext = createContext(null)
@@ -41,31 +42,39 @@ export function AppProvider({ children }) {
 
   const updateConfig = useCallback((patch) => setConfig(c => ({ ...c, ...patch })), [])
 
-  const addToCartLocal = useCallback((product, qty = 1) => {
+  const addToCartLocal = useCallback((product, qty = 1, shopifyData = null) => {
     setCart(c => {
       const prevQty = c.items[product.id] || 0
+      const newItems = { ...c.items, [product.id]: prevQty + qty }
+      const newProducts = { ...c.products, [product.id]: product }
+      
+      const newQty = Object.values(newItems).reduce((sum, q) => sum + q, 0)
+      const newTotal = Object.entries(newItems).reduce((sum, [id, q]) => sum + ((newProducts[id]?.price || 0) * q), 0)
+
       return {
         ...c,
-        quantity: c.quantity + qty,
-        total: c.total + product.price * qty,
-        items: { ...c.items, [product.id]: prevQty + qty },
-        products: { ...c.products, [product.id]: product },
+        shopifyCartId: shopifyData?.cart_id || c.shopifyCartId,
+        checkoutUrl: shopifyData?.checkout_url || c.checkoutUrl,
+        quantity: newQty,
+        total: newTotal,
+        items: newItems,
+        products: newProducts,
       }
     })
   }, [])
 
   const removeFromCart = useCallback((productId) => {
     setCart(c => {
-      const qty = c.items[productId] || 0
-      const price = c.products[productId]?.price || 0
       const newItems = { ...c.items }
       const newProducts = { ...c.products }
       delete newItems[productId]
       delete newProducts[productId]
+      const newQty = Object.values(newItems).reduce((sum, q) => sum + q, 0)
+      const newTotal = Object.entries(newItems).reduce((sum, [id, q]) => sum + ((newProducts[id]?.price || 0) * q), 0)
       return {
         ...c,
-        quantity: Math.max(0, c.quantity - qty),
-        total: Math.max(0, c.total - price * qty),
+        quantity: newQty,
+        total: newTotal,
         items: newItems,
         products: newProducts,
       }
@@ -74,14 +83,23 @@ export function AppProvider({ children }) {
 
   const updateQty = useCallback((productId, newQty) => {
     setCart(c => {
-      const oldQty = c.items[productId] || 0
-      const price = c.products[productId]?.price || 0
-      const diff = newQty - oldQty
+      if (newQty <= 0) {
+        const newItems = { ...c.items }
+        const newProducts = { ...c.products }
+        delete newItems[productId]
+        delete newProducts[productId]
+        const q = Object.values(newItems).reduce((sum, val) => sum + val, 0)
+        const t = Object.entries(newItems).reduce((sum, [id, val]) => sum + ((newProducts[id]?.price || 0) * val), 0)
+        return { ...c, quantity: q, total: t, items: newItems, products: newProducts }
+      }
+      const newItems = { ...c.items, [productId]: newQty }
+      const q = Object.values(newItems).reduce((sum, val) => sum + val, 0)
+      const t = Object.entries(newItems).reduce((sum, [id, val]) => sum + ((c.products[id]?.price || 0) * val), 0)
       return {
         ...c,
-        quantity: c.quantity + diff,
-        total: c.total + price * diff,
-        items: { ...c.items, [productId]: newQty },
+        quantity: q,
+        total: t,
+        items: newItems,
       }
     })
   }, [])
@@ -90,8 +108,8 @@ export function AppProvider({ children }) {
     setCart({ shopifyCartId: null, checkoutUrl: null, quantity: 0, total: 0, items: {}, products: {} })
   }, [])
 
-  const setShopifyCart = useCallback((cartId, checkoutUrl, totalQty, totalCost) => {
-    setCart(c => ({ ...c, shopifyCartId: cartId, checkoutUrl, quantity: totalQty, total: totalCost }))
+  const setShopifyCart = useCallback((cartId, checkoutUrl) => {
+    setCart(c => ({ ...c, shopifyCartId: cartId, checkoutUrl }))
   }, [])
 
   const toggleCompare = useCallback((product) => {

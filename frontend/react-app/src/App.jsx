@@ -1,3 +1,4 @@
+import React from 'react';
 import { useState } from 'react'
 import { Toaster } from 'react-hot-toast'
 import { AppProvider } from './context/AppContext'
@@ -20,8 +21,8 @@ function AppShell() {
   const { addToCartLocal, config, updateConfig } = useApp()
 
   const handleAddToCart = (product) => setAddModal(product)
-  const handleAddConfirmed = (product, qty) => {
-    addToCartLocal(product, qty)
+  const handleAddConfirmed = (product, qty, shopifyData) => {
+    addToCartLocal(product, qty, shopifyData)
     setAddModal(null)
   }
 

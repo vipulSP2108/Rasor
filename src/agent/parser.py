@@ -13,18 +13,18 @@ _KNOWN_COLORS = [
 ]
 
 _KNOWN_CATEGORIES = {
-    "t-shirt": ["t-shirt", "tshirt", "tee", "topwear", "vest"],
+    "t-shirt": ["t-shirt", "t shirt", "tshirt", "tee", "tees", "t-shirts", "t shirts", "topwear", "vest"],
     "hoodie": ["hoodie", "sweatshirt", "jacket", "pullover"],
     "joggers": ["joggers", "trackpants", "sweatpants", "pajamas"],
     "jeans": ["jeans", "denim", "pants"],
-    "shirt": ["shirt", "button up", "formal shirt", "casual shirt"],
+    "shirt": ["shirt", "button up", "formal shirt", "casual shirt", "shirts"],
     "footwear": ["shoes", "sneakers", "running shoes", "footwear", "sandals"],
     "headphones": ["headphones", "earphones", "earbuds", "audio", "airpods"],
     "monitor": ["monitor", "display", "screen", "4k monitor"]
 }
 
 _KNOWN_DESIGNS = {
-    "Graphic Print": ["graphic", "printed", "print", "anime", "art print", "graphic print"],
+    "Graphic Print": ["graphic", "printed", "print", "anime", "art print", "graphic print", "graphic printed"],
     "Typography": ["typography", "text", "quotes", "slogan", "lettering"],
     "Solid": ["solid", "plain", "basic", "single color", "simple"],
     "Washed": ["washed", "acid wash", "vintage wash", "distressed"],
@@ -33,7 +33,11 @@ _KNOWN_DESIGNS = {
 }
 
 _KNOWN_FANDOMS = {
-    "Marvel": ["marvel", "avengers", "iron man", "spider man", "spiderman", "captain america", "thor", "deadpool"],
+    "Marvel": [
+        "marvel", "avengers", "iron man", "spider man", "spiderman", "captain america", 
+        "thor", "deadpool", "black panther", "black pantheer", "wakanda", "t'challa", 
+        "tchalla", "wolverine", "hulk", "loki", "groot", "guardians of the galaxy", "venom"
+    ],
     "DC": ["dc", "batman", "dark knight", "superman", "joker", "flash", "gotham"],
     "Harry Potter": ["harry potter", "hogwarts", "gryffindor", "slytherin"],
     "Disney": ["disney", "mickey", "mickey mouse", "donald duck"],
@@ -88,10 +92,11 @@ def parse_user_intent(prompt: str) -> ParsedShoppingIntent:
     elif re.search(r"\b(unisex)\b", p_lower):
         gender = "unisex"
 
-    # 2. Color Extraction
+    # 2. Color Extraction (Exclude colors that are part of entity names like "black panther")
     color = None
+    color_text = re.sub(r"\bblack\s+panthe+r\b", "", p_lower)
     for c in _KNOWN_COLORS:
-        if re.search(rf"\b{c}\b", p_lower):
+        if re.search(rf"\b{c}\b", color_text):
             color = c.title()
             break
 

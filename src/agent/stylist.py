@@ -187,25 +187,30 @@ class StylistAgent:
     def _call_gemini(self, conversation_prompt: str) -> Optional[str]:
         if not self.gemini_key:
             return None
-        try:
-            url = (
-                f"https://generativelanguage.googleapis.com/v1beta/models/"
-                f"{self.primary_model}:generateContent?key={self.gemini_key}"
-            )
-            payload = {
-                "contents": [{"parts": [{"text": conversation_prompt}]}],
-                "systemInstruction": {"parts": [{"text": _STYLIST_SYSTEM_PROMPT}]},
-                "generationConfig": {
-                    "responseMimeType": "application/json",
-                    "temperature": 0.6,  # Slightly more creative for natural conversation
-                },
-            }
-            resp = requests.post(url, json=payload, timeout=10)
-            if resp.status_code == 200:
-                return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-            print(f"[Stylist/Gemini] HTTP {resp.status_code}: {resp.text[:150]}")
-        except Exception as e:
-            print(f"[Stylist/Gemini] Error: {e}")
+        candidate_models = [self.primary_model, "gemini-3.1-flash-lite", "gemini-3.5-flash-lite"]
+        seen = set()
+        for m in candidate_models:
+            if not m or m in seen:
+                continue
+            seen.add(m)
+            try:
+                url = (
+                    f"https://generativelanguage.googleapis.com/v1beta/models/"
+                    f"{m}:generateContent?key={self.gemini_key}"
+                )
+                payload = {
+                    "contents": [{"parts": [{"text": conversation_prompt}]}],
+                    "systemInstruction": {"parts": [{"text": _STYLIST_SYSTEM_PROMPT}]},
+                    "generationConfig": {
+                        "responseMimeType": "application/json",
+                        "temperature": 0.6,
+                    },
+                }
+                resp = requests.post(url, json=payload, timeout=10)
+                if resp.status_code == 200:
+                    return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+            except Exception:
+                continue
         return None
 
     def _call_groq(self, conversation_prompt: str) -> Optional[str]:
@@ -248,8 +253,8 @@ class StylistAgent:
         """Build the conversation prompt from history + new user message."""
         lines = []
         for msg in history:
-            role = "User" if msg["role"] == "user" else "Stylist"
-            lines.append(f"{role}: {msg['content']}")
+            role = "User" if msg.get("role") == "user" else "Stylist"
+            lines.append(f"{role}: {msg.get('content', '')}")
         lines.append(f"User: {user_input}")
         lines.append("Stylist (respond in JSON):")
         return "\n".join(lines)
@@ -263,20 +268,56 @@ class StylistAgent:
         """
         u = user_input.lower().strip()
         
-        # 1. Greeting — handle typos like 'he hi', 'helo', or any short non-shopping phrase
-        _greeting_words = re.search(r"\b(hi|hello|hey|heya|sup|namaste|greetings|howdy)\b", u)
-        _has_any_product_signal = re.search(
-            r"\b(shirt|tee|hoodie|pant|jean|trouser|jacket|buy|want|need|looking|show|black|white|blue|navy|dark|light|oversized|slim|men|women|polo|graphic)\b", u
-        )
-        _is_short = len(u.split()) <= 3
-        if _greeting_words or (_is_short and not _has_any_product_signal):
-            return StylistResponse(
-                intent="greeting",
-                message="Hey there! 👋 I'm Rasor's AI stylist. Tell me what you're looking to shop for today and I'll help you find the best picks!",
-                ready_for_search=False,
-                updated_query="",
-                suggested_options=["Show me men's t-shirts", "Marvel fan merch", "Surprise me 🎲"]
+        # Build context from history for query synthesis
+        all_user_text = " ".join(
+            [msg.get("content", "") for msg in conversation_history if msg.get("role") == "user"]
+        ) + " " + user_input
+        all_user_text = all_user_text.strip()
+
+        # 0. Skin Tone Check (Handles "Skin tone 5", "Tone 7", etc.)
+        skin_tone_match = re.search(r"\b(?:skin\s*tone[^0-9]*|tone[^0-9]*|i['\']?m\s*(?:a\s*)?|around\s*a?\s*)(\d+)\b", u)
+        if not skin_tone_match and u.isdigit() and 1 <= int(u) <= 10:
+            skin_tone_match = re.search(r"(\d+)", u)
+
+        if skin_tone_match:
+            rating = int(skin_tone_match.group(1))
+            if 1 <= rating <= 10:
+                rec = self.color_agent.get_recommendation(rating)
+                best_colors = self.color_agent.to_search_colors(rating)
+                
+                # Check if we already have clothing category
+                has_category = bool(re.search(r"\b(t-?shirts?|tees?|hoodies?|joggers?|jeans?|shirts?|polos?|trousers?|shorts?|sweatshirts?)\b", all_user_text, re.IGNORECASE))
+                if has_category:
+                    return StylistResponse(
+                        intent="search",
+                        message=f"With skin tone {rating} ({rec['label']}), you'll look incredible in {rec['best'][0]}, {rec['best'][1]}, or {rec['best'][2]}! Let me find the best options in those colors for you. 🎨",
+                        ready_for_search=True,
+                        updated_query=f"{all_user_text} {best_colors}".strip()
+                    )
+                else:
+                    return StylistResponse(
+                        intent="clarify",
+                        message=f"With skin tone {rating} ({rec['label']}), colors like {best_colors} look fantastic on you! What clothing item are we shopping for? (e.g. Men's T-shirts, Hoodies)",
+                        ready_for_search=False,
+                        updated_query="",
+                        suggested_options=["Men's T-shirts", "Women's Hoodies", "Casual Shirts"]
+                    )
+
+        # 1. Greeting — ONLY if this is the start of the conversation (history is empty)
+        if len(conversation_history) == 0:
+            _greeting_words = re.search(r"\b(hi|hello|hey|heya|sup|namaste|greetings|howdy)\b", u)
+            _has_any_product_signal = re.search(
+                r"\b(shirt|tee|hoodie|pant|jean|trouser|jacket|buy|want|need|looking|show|black|white|blue|navy|dark|light|oversized|slim|men|women|polo|graphic)\b", u
             )
+            _is_short = len(u.split()) <= 3
+            if _greeting_words or (_is_short and not _has_any_product_signal):
+                return StylistResponse(
+                    intent="greeting",
+                    message="Hey there! 👋 I'm Rasor's AI stylist. Tell me what you're looking to shop for today and I'll help you find the best picks!",
+                    ready_for_search=False,
+                    updated_query="",
+                    suggested_options=["Show me men's t-shirts", "Marvel fan merch", "Surprise me 🎲"]
+                )
         
         # 2. Autopilot
         if re.search(r"\b(pick for me|just pick|i don.?t (care|mind)|you choose|whatever|surprise me|just show)\b", u):
@@ -286,11 +327,6 @@ class StylistAgent:
                 ready_for_search=True,
                 updated_query="best rated men t-shirt"
             )
-        
-        # 3. Build context from history for query synthesis
-        all_user_text = " ".join(
-            [msg["content"] for msg in conversation_history if msg["role"] == "user"]
-        ) + " " + user_input
         
         # Detect key signals in the accumulated context
         has_category = bool(re.search(r"\b(t-?shirts?|tees?|hoodies?|joggers?|jeans?|shirts?|polos?|trousers?|shorts?|sweatshirts?)\b", all_user_text, re.IGNORECASE))
@@ -333,7 +369,15 @@ class StylistAgent:
                 suggested_options=["Regular Fit", "Oversized Fit"]
             )
         
-        # Completely unknown intent
+        # Default search if we have category
+        if has_category:
+            return StylistResponse(
+                intent="search",
+                message="Got it! Searching the best options for you now... 🛍️",
+                ready_for_search=True,
+                updated_query=all_user_text.strip()
+            )
+
         return StylistResponse(
             intent="clarify",
             message="I'd love to help! Are we shopping for men's or women's clothing, and what specific item are you looking for today? (e.g., t-shirt, hoodie)",
@@ -348,8 +392,11 @@ class StylistAgent:
         Process the user's input using the full conversation history.
         Returns a structured StylistResponse with the AI's reply and search intent.
         """
-        # Check for skin tone rating first — inject colors into query before LLM
-        skin_tone_match = re.search(r"\b(?:skin\s*tone[^0-9]*|i['\']?m\s*(?:a\s*)?|around\s*a?\s*)(\d+)\b", user_input.lower())
+        # Check for skin tone rating first — inject colors into query
+        skin_tone_match = re.search(r"\b(?:skin\s*tone[^0-9]*|tone[^0-9]*|i['\']?m\s*(?:a\s*)?|around\s*a?\s*)(\d+)\b", user_input.lower())
+        if not skin_tone_match and user_input.strip().isdigit() and 1 <= int(user_input.strip()) <= 10:
+            skin_tone_match = re.search(r"(\d+)", user_input.strip())
+
         skin_tone_rating = None
         if skin_tone_match:
             rating = int(skin_tone_match.group(1))
@@ -359,7 +406,7 @@ class StylistAgent:
         # Build the prompt from full conversation context
         prompt = self._build_prompt(user_input, conversation_history)
 
-        # Call LLM (Gemini → Groq fallback)
+        # Call LLM (Gemini with multi-model fallback → Groq)
         raw = self._call_gemini(prompt) or self._call_groq(prompt)
         parsed = self._extract_json(raw)
 
@@ -367,15 +414,19 @@ class StylistAgent:
             # Smart rule-based fallback when LLM is unavailable
             return self._rule_fallback(user_input, conversation_history)
 
-        # If skin tone was detected, append color theory to the search query
-        if skin_tone_rating and parsed.get("ready_for_search"):
+        # If skin tone was detected, ensure color theory palette is recommended and search is ready
+        if skin_tone_rating:
             rec = self.color_agent.get_recommendation(skin_tone_rating)
             best_colors = self.color_agent.to_search_colors(skin_tone_rating)
-            parsed["message"] = (
-                f"With your skin tone ({rec['label']}), you'll look amazing in {rec['best'][0]}, "
-                f"{rec['best'][1]}, or {rec['best'][2]}! Let me find the best options in those colors for you. 🎨"
-            )
             existing_query = parsed.get("updated_query", "")
+            if not existing_query:
+                # Accumulate from user turns
+                existing_query = " ".join([m.get("content", "") for m in conversation_history if m.get("role") == "user"]) + " " + user_input
+            
+            parsed["message"] = (
+                f"With skin tone {skin_tone_rating} ({rec['label']}), you'll look incredible in {rec['best'][0]}, "
+                f"{rec['best'][1]}, or {rec['best'][2]}! Let me find the best options in those shades for you. 🎨"
+            )
             parsed["updated_query"] = f"{existing_query} {best_colors}".strip()
             parsed["ready_for_search"] = True
 

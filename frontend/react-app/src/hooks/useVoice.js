@@ -46,17 +46,22 @@ export function useVoice() {
         const latestTranscript = (finalTranscript + interimTranscript).trim();
         setTranscript(latestTranscript);
 
-        // Reset the 3 second silence timer if we got text
+        // Reset the silence timer: 2.5 seconds of silence after speaking completes the input
         if (latestTranscript.trim()) {
           if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
           silenceTimeoutRef.current = setTimeout(() => {
-            recognition.stop();
-          }, 3000);
+            if (recognitionRef.current) {
+              try { recognitionRef.current.stop(); } catch (e) {}
+            }
+            setIsListening(false);
+          }, 2500);
         }
       };
 
       recognition.onerror = (event) => {
-        console.error('Speech recognition error', event.error);
+        if (event.error !== 'no-speech') {
+          console.warn('Speech recognition notice:', event.error);
+        }
         if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
         setIsListening(false);
       };
@@ -74,35 +79,63 @@ export function useVoice() {
     }
   }, []);
 
-  const startListening = useCallback(() => {
-    if (recognitionRef.current) {
-      setTranscript(''); // Clear previous transcript
-      try {
-        recognitionRef.current.start();
-        setIsListening(true);
-      } catch (e) {
-        console.error("Could not start recognition:", e);
-      }
-    } else {
-      console.warn("Speech Recognition not supported in this browser.");
-    }
-  }, []);
-
   const stopListening = useCallback(() => {
     if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
     if (recognitionRef.current) {
-      recognitionRef.current.stop();
+      try {
+        recognitionRef.current.stop();
+      } catch (e) {}
       setIsListening(false);
     }
   }, []);
 
+  const startListening = useCallback(() => {
+    // Don't listen if speech synthesis is currently speaking
+    if (window.speechSynthesis && window.speechSynthesis.speaking) {
+      return;
+    }
+    if (recognitionRef.current) {
+      setTranscript(''); // Clear previous transcript
+      if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
+      
+      try {
+        recognitionRef.current.start();
+        setIsListening(true);
+      } catch (e) {
+        // Recognition may already be running
+      }
+
+      // Initial 8-second silence timeout: if no one speaks, automatically turn off listening
+      silenceTimeoutRef.current = setTimeout(() => {
+        stopListening();
+      }, 8000);
+    } else {
+      console.warn("Speech Recognition not supported in this browser.");
+    }
+  }, [stopListening]);
+
   const speak = useCallback((text, voiceURI = null, onEnd = null) => {
-    if (!window.speechSynthesis) return;
+    if (!window.speechSynthesis || !text) return;
 
     // Cancel any ongoing speech
     window.speechSynthesis.cancel();
 
-    const utterance = new SpeechSynthesisUtterance(text);
+    // Strip emojis, markdown, and unwanted symbols so TTS doesn't speak emoji names aloud
+    const cleanText = text
+      .replace(/\*\*(.*?)\*\*/g, '$1')
+      .replace(/\*(.*?)\*/g, '$1')
+      .replace(/[\u{1F300}-\u{1F9FF}\u{1F600}-\u{1F64F}\u{1F680}-\u{1F6FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1FA70}-\u{1FAFF}\u{1F900}-\u{1F9FF}\u{1F000}-\u{1F02F}\u{1F0A0}-\u{1F0FF}\u{1F100}-\u{1F64F}\u{1F680}-\u{1F6FF}\u{1F1E6}-\u{1F1FF}]/gu, '')
+      .replace(/https?:\/\/\S+/g, '')
+      .replace(/[#_~`]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    if (!cleanText) {
+      if (onEnd) onEnd();
+      return;
+    }
+
+    const utterance = new SpeechSynthesisUtterance(cleanText);
     
     if (voiceURI && voices.length > 0) {
       const selectedVoice = voices.find(v => v.voiceURI === voiceURI);
@@ -111,9 +144,12 @@ export function useVoice() {
       }
     }
     
-    if (onEnd) {
-      utterance.onend = onEnd;
-    }
+    utterance.onend = () => {
+      if (onEnd) onEnd();
+    };
+    utterance.onerror = () => {
+      if (onEnd) onEnd();
+    };
 
     window.speechSynthesis.speak(utterance);
   }, [voices]);

@@ -195,10 +195,18 @@ def search(req: SearchRequest):
         if not raw_products:
             return {"products": [], "discarded_products": [], "evaluations": [], "status": "Filtered out by negative keywords", "canonical_query": canonical_query.model_dump() if hasattr(canonical_query, "model_dump") else {}}
 
+        import math
+        def bayesian_score(p):
+            return (p.rating or 0.0) * math.log10((p.review_count or 0) + 1)
+            
+        raw_products.sort(key=bayesian_score, reverse=True)
+
         # Deep enrichment
         if config.enable_deep_enrichment and hasattr(provider, "enrich_product"):
-            for p in raw_products[:config.max_deep_fetches]:
-                provider.enrich_product(p)
+            top_to_enrich = raw_products[:config.max_deep_fetches]
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                list(executor.map(provider.enrich_product, top_to_enrich))
 
         # LLM evaluation
         try:
@@ -216,25 +224,38 @@ def search(req: SearchRequest):
 
         eval_map = {e.product_id: e for e in evaluations}
 
-        # Serialize products
-        products_data = []
-        discarded_products_data = []
-        
-        # Sort validated products first
-        def get_score(p):
-            e = eval_map.get(p.id)
-            return e.match_score if e else 0.5
+        import math
+        def bayesian_score(p):
+            return (p.rating or 0.0) * math.log10((p.review_count or 0) + 1)
+            
+        bayesian_scores = [bayesian_score(p) for p in (validated_products if validated_products else raw_products)]
+        max_b = max(bayesian_scores, default=1.0) or 1.0
+
+        def composite_score(p):
+            llm_score = eval_map.get(p.id).match_score if eval_map.get(p.id) else 0.5
+            b_score = bayesian_score(p) / max_b
+            return (llm_score * 0.7) + (b_score * 0.3)
             
         final_list = validated_products if validated_products else raw_products
-        final_list.sort(key=get_score, reverse=True)
-
-        accepted_count = 0
-        for p in final_list:
-            e = eval_map.get(p.id)
-            score = e.match_score if e else 0.5
-            verdict = "STRONG_MATCH" if score >= 0.8 else ("PARTIAL_MATCH" if score >= 0.5 else "REJECTED")
+        
+        if not config.truth_hierarchy:
+            final_list = [p for p in final_list if p.specs.get("truth_match") != False]
             
-            product_dict = {
+        final_list.sort(key=composite_score, reverse=True)
+
+        search_results = validated_products[:config.max_search_results]
+        displayed_ids = {p.id for p in search_results}
+        rejected_products = [p for p in raw_products if p.id not in displayed_ids]
+        rejected_products.sort(
+            key=lambda p: (eval_map[p.id].match_score if p.id in eval_map else 0.0, bayesian_score(p)),
+            reverse=True
+        )
+
+        def to_dict(p, is_discarded=False):
+            e = eval_map.get(p.id)
+            score = e.match_score if e else 0.0
+            verdict = "STRONG_MATCH" if score >= 0.8 else ("PARTIAL_MATCH" if score >= 0.5 else "REJECTED")
+            return {
                 "id": p.id,
                 "title": p.title,
                 "price": p.price,
@@ -242,18 +263,11 @@ def search(req: SearchRequest):
                 "merchant": p.merchant,
                 "specs": p.specs,
                 "relevance_score": score,
-                "verdict": verdict,
+                "verdict": "REJECTED" if is_discarded and score < 0.5 else verdict,
             }
 
-            # If we had successful validation and it's rejected, put in discarded
-            if evaluations and verdict == "REJECTED":
-                discarded_products_data.append(product_dict)
-            else:
-                if accepted_count < config.max_search_results:
-                    products_data.append(product_dict)
-                    accepted_count += 1
-                else:
-                    discarded_products_data.append(product_dict)
+        products_data = [to_dict(p) for p in search_results]
+        discarded_products_data = [to_dict(p, is_discarded=True) for p in rejected_products]
 
         # Serialize evaluations for frontend
         evals_data = [e.model_dump() if hasattr(e, "model_dump") else vars(e) for e in evaluations]
