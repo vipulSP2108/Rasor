@@ -6,7 +6,7 @@ import CheckoutSection from './CheckoutSection'
 import toast from 'react-hot-toast'
 
 export default function CartDrawer({ onClose }) {
-  const { cart, removeFromCart, updateQty, clearCart, config } = useApp()
+  const { cart, removeFromCart, updateQty, clearCart, config, updateConfig } = useApp()
   const curr = '₹'
 
   const cartProducts = Object.entries(cart.items).map(([id, qty]) => ({
@@ -141,7 +141,7 @@ export default function CartDrawer({ onClose }) {
             currency={config.currency}
             customerEmail={config.customerEmail}
             demoMode={config.demoMode}
-            onDemoModeChange={(m) => {}}
+            onDemoModeChange={(m) => updateConfig({ demoMode: m })}
             onSuccess={onClose}
           />
         </div>

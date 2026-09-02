@@ -49,12 +49,13 @@ app.add_middleware(
 # Per-session stylist agents (keyed by session_id)
 _stylist_agents: Dict[str, StylistAgent] = {}
 
-def get_provider(data_source: str):
-    if data_source == "bewakoof_live_api":
-        return BewakoofCatalogProvider()
-    elif data_source in ["shopify_storefront_live_api", "shopify_storefront_api"]:
+def get_provider(data_source: Any):
+    ds = str(data_source or "").lower().strip()
+    if ds in ("shopify", "shopify_storefront", "shopify_live", "shopify_storefront_live_api", "shopify_storefront_api"):
         return ShopifyCatalogProvider()
-    elif data_source == "google_shopping_scraper":
+    elif ds in ("bewakoof", "bewakoof_api", "bewakoof_live_api"):
+        return BewakoofCatalogProvider()
+    elif ds in ("google", "google_shopping", "google_shopping_scraper"):
         return GoogleShoppingScraper()
     else:
         return DevCatalogProvider()
@@ -73,6 +74,7 @@ class SearchRequest(BaseModel):
     truth_hierarchy: bool = True
     enable_semantic_engine: bool = True
     currency: str = "INR"
+    user_location: Optional[str] = "Mumbai"
 
 class ChatRequest(BaseModel):
     message: str
@@ -81,6 +83,7 @@ class ChatRequest(BaseModel):
     data_source: str = "bewakoof_live_api"
     primary_model: str = "gemini-3.5-flash"
     fallback_model: str = "llama-3.3-70b-versatile"
+    user_location: Optional[str] = "Mumbai"
 
 class CartCreateRequest(BaseModel):
     variant_gid: str
@@ -122,10 +125,40 @@ class OfferRequest(BaseModel):
     product_lookup: Dict[str, Dict[str, Any]]
     currency: str = "INR"
 
+class ProductsByIdsRequest(BaseModel):
+    ids: List[str]
+    data_source: Optional[str] = "shopify_storefront_live_api"
+
 # ── Health ────────────────────────────────────────────────────────────────────
 @app.get("/health")
 def health():
     return {"status": "ok", "checkout_available": HAS_CHECKOUT}
+
+@app.post("/api/products/by-ids")
+def get_products_by_ids(req: ProductsByIdsRequest):
+    """Fetches exact products by their IDs from Shopify Storefront (or Bewakoof/dev catalog)."""
+    try:
+        from src.data.shopify_api import ShopifyCatalogProvider
+        from src.data.bewakoof_api import BewakoofCatalogProvider
+        
+        provider = ShopifyCatalogProvider()
+        prods = provider.get_products_by_ids(req.ids)
+        
+        # If Shopify didn't have all IDs, check Bewakoof provider
+        found_ids = {p.id for p in prods} | {p.specs.get("shopify_gid") for p in prods}
+        missing = [i for i in req.ids if i not in found_ids]
+        if missing:
+            b_prov = BewakoofCatalogProvider()
+            extra = b_prov.get_products_by_ids(missing)
+            prods.extend(extra)
+
+        return {
+            "products": [p.model_dump() for p in prods],
+            "count": len(prods)
+        }
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ── Search ────────────────────────────────────────────────────────────────────
 @app.post("/api/search")
@@ -134,10 +167,26 @@ def search(req: SearchRequest):
         # Force upgrade legacy models sent by stale frontend state
         if req.primary_model in ["gemini-1.5-flash", "gemini-2.5-flash"]:
             req.primary_model = "gemini-3.5-flash"
+
+        # Safely normalize data_source strings (e.g. 'shopify', 'bewakoof')
+        ds_val = str(req.data_source or "bewakoof_live_api").lower().strip()
+        if ds_val in ("shopify", "shopify_storefront", "shopify_live", "shopify_storefront_live_api", "shopify_storefront_api"):
+            normalized_ds = DataSourceType.SHOPIFY_STOREFRONT_LIVE_API
+        elif ds_val in ("bewakoof", "bewakoof_api", "bewakoof_live_api"):
+            normalized_ds = DataSourceType.BEWAKOOF_LIVE_API
+        elif ds_val in ("google", "google_shopping", "google_shopping_scraper"):
+            normalized_ds = DataSourceType.GOOGLE_SHOPPING_SCRAPER
+        elif ds_val in ("mock", "dev_mock"):
+            normalized_ds = DataSourceType.DEV_MOCK
+        else:
+            try:
+                normalized_ds = DataSourceType(req.data_source)
+            except Exception:
+                normalized_ds = DataSourceType.BEWAKOOF_LIVE_API
             
         config = AgentConfig(
             mode=ExecutionMode.LIVE,
-            data_source=DataSourceType(req.data_source),
+            data_source=normalized_ds,
             primary_model=req.primary_model,
             fallback_model=req.fallback_model,
             max_search_results=req.max_results,
@@ -201,12 +250,35 @@ def search(req: SearchRequest):
             
         raw_products.sort(key=bayesian_score, reverse=True)
 
-        # Deep enrichment
-        if config.enable_deep_enrichment and hasattr(provider, "enrich_product"):
-            top_to_enrich = raw_products[:config.max_deep_fetches]
+        # Check if user requested fast / urgent shipping
+        is_fast_shipping = (
+            getattr(canonical_query, "fast_shipping_requested", False)
+            or bool(re.search(r"\b(fast|faster|fastest|quick|urgent|express|speed|early)\b", req.query.lower()))
+        )
+
+        # Deep enrichment from live v2 PDP
+        if (config.enable_deep_enrichment or is_fast_shipping) and hasattr(provider, "enrich_product"):
+            top_to_enrich = raw_products[:max(config.max_deep_fetches, 10)]
             import concurrent.futures
             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
                 list(executor.map(provider.enrich_product, top_to_enrich))
+
+        # If fast shipping requested: calculate real distance from v2 origin facility to user location
+        if is_fast_shipping:
+            try:
+                from src.agent.logistics_agent import LogisticsAgent
+                logistics = LogisticsAgent()
+                u_loc = req.user_location or "Mumbai"
+                for p in raw_products:
+                    est = logistics.calculate_delivery_estimate(p.specs, u_loc)
+                    p.shipping_days = est.get("shipping_days", 3)
+                    p.specs["distance_km"] = est.get("distance_km")
+                    p.specs["origin_hub"] = est.get("origin_hub")
+                    p.specs["shipping_speed"] = est.get("speed_label")
+                # Prioritize items with lowest shipping days and nearest warehouse distance
+                raw_products.sort(key=lambda p: (p.shipping_days or 3, p.specs.get("distance_km") or 9999))
+            except Exception as e:
+                print(f"[Search] Fast shipping ranking error: {e}")
 
         # LLM evaluation
         try:
@@ -318,16 +390,99 @@ class CompareRequest(BaseModel):
     products: List[Dict[str, Any]]
     primary_model: str = "gemini-1.5-flash"
     fallback_model: str = "llama-3.3-70b-versatile"
+    user_location: Optional[str] = "Mumbai, Maharashtra"
+
+class LogisticsEstimateRequest(BaseModel):
+    products: List[Dict[str, Any]]
+    location: str = "Mumbai, Maharashtra"
+
+@app.get("/api/logistics/resolve/{query}")
+def resolve_logistics_destination(query: str):
+    try:
+        from src.agent.logistics_agent import LogisticsAgent
+        agent = LogisticsAgent()
+        return agent.resolve_destination(query)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/logistics/estimate")
+def estimate_logistics(req: LogisticsEstimateRequest):
+    try:
+        from src.agent.logistics_agent import LogisticsAgent
+        from src.data.bewakoof_api import BewakoofCatalogProvider
+        from src.data.shopify_api import ShopifyCatalogProvider
+        
+        b_provider = BewakoofCatalogProvider()
+        s_provider = ShopifyCatalogProvider()
+        agent = LogisticsAgent()
+        dest = agent.resolve_destination(req.location)
+        estimates = {}
+        enriched_specs = {}
+
+        for p in req.products:
+            prod_obj = Product(**p)
+            # Fetch manufacturer details from v2 if not yet enriched
+            if not prod_obj.specs.get("manufactured_by") and not prod_obj.specs.get("origin_pincode"):
+                try:
+                    if str(prod_obj.merchant).lower() == "shopify" or "SHPF-" in str(prod_obj.id):
+                        prod_obj = s_provider.enrich_product(prod_obj)
+                    else:
+                        prod_obj = b_provider.enrich_product(prod_obj)
+                except Exception as e:
+                    print(f"[Logistics] Enrich error for {prod_obj.id}: {e}")
+
+            est = agent.calculate_delivery_estimate(prod_obj.specs, req.location)
+            estimates[p.get("id")] = est
+            enriched_specs[p.get("id")] = prod_obj.specs
+
+        return {
+            "location": req.location,
+            "destination_details": dest,
+            "estimates": estimates,
+            "enriched_specs": enriched_specs
+        }
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/compare")
 def compare(req: CompareRequest):
     try:
+        from src.data.bewakoof_api import BewakoofCatalogProvider
+        from src.agent.logistics_agent import LogisticsAgent
+        provider = BewakoofCatalogProvider()
+        logistics_agent = LogisticsAgent()
+        
+        products = []
+        for p in req.products:
+            prod_obj = Product(**p)
+            try:
+                prod_obj = provider.enrich_product(prod_obj)
+            except Exception as enrich_err:
+                print(f"[Compare] Enrich failed for {prod_obj.id}: {enrich_err}")
+
+            # Attach per-product warehouse distance & transit estimation via LogisticsAgent
+            try:
+                logistics = logistics_agent.calculate_delivery_estimate(prod_obj.specs, req.user_location or "Mumbai")
+                prod_obj.shipping_days = logistics["shipping_days"]
+                prod_obj.specs["logistics"] = logistics
+                prod_obj.specs["origin_hub"] = logistics["origin_hub"]
+                prod_obj.specs["distance_km"] = logistics["distance_km"]
+                prod_obj.specs["shipping_speed"] = logistics["speed_label"]
+                prod_obj.specs["destination_display"] = logistics["destination_display"]
+            except Exception as log_err:
+                print(f"[Compare] Logistics failed for {prod_obj.id}: {log_err}")
+
+            products.append(prod_obj)
+
         brain = AgentBrain(primary_model=req.primary_model, fallback_model=req.fallback_model)
-        products = [Product(**p) for p in req.products]
         comparison = brain.compare_products(products)
         if not comparison:
             raise HTTPException(status_code=500, detail="Failed to generate comparison")
-        return comparison.model_dump() if hasattr(comparison, "model_dump") else {}
+        
+        resp_data = comparison.model_dump() if hasattr(comparison, "model_dump") else {}
+        resp_data["enriched_products"] = [p.model_dump() for p in products]
+        return resp_data
     except HTTPException:
         raise
     except Exception as e:

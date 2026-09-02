@@ -178,6 +178,51 @@ class ShopifyCatalogProvider(BaseCatalogProvider):
         """Tier 5: Full catalog dump — last resort fallback."""
         return self._fetch_via_products_query("available_for_sale:true", limit)
 
+    def get_products_by_ids(self, ids: List[str]) -> List[Product]:
+        """Fetches exact products by their Shopify GIDs / numeric IDs in a single GraphQL query."""
+        if not ids:
+            return []
+
+        gids = []
+        for raw_id in ids:
+            if not raw_id:
+                continue
+            clean_id = str(raw_id).replace("SHPF-", "").strip()
+            if clean_id.startswith("gid://"):
+                gids.append(clean_id)
+            elif clean_id.isdigit():
+                gids.append(f"gid://shopify/Product/{clean_id}")
+
+        products: List[Product] = []
+        if gids:
+            gql = _PRODUCT_FIELDS_FRAGMENT + """
+            query GetProductsByIds($ids: [ID!]!) {
+              nodes(ids: $ids) {
+                ... on Product {
+                  ...ProductFields
+                }
+              }
+            }
+            """
+            data = self._gql(gql, {"ids": gids})
+            nodes = data.get("data", {}).get("nodes", [])
+            for node in nodes:
+                if node and isinstance(node, dict):
+                    p = self._map_to_product(node, query_terms=[])
+                    if p:
+                        products.append(p)
+
+        # For any non-Shopify IDs (e.g. bewakoof-xxx), check fallback/bewakoof catalog
+        found_ids = {p.id for p in products} | {p.specs.get("shopify_gid") for p in products}
+        remaining_ids = [i for i in ids if i not in found_ids]
+        if remaining_ids:
+            from src.data.bewakoof_api import BewakoofCatalogProvider
+            b_provider = BewakoofCatalogProvider()
+            b_prods = b_provider.get_products_by_ids(remaining_ids)
+            products.extend(b_prods)
+
+        return products
+
     # ------------------------------------------------------------------
     # Query builder
     # ------------------------------------------------------------------
@@ -408,40 +453,54 @@ class ShopifyCatalogProvider(BaseCatalogProvider):
         """
         bewakoof_id = product.specs.get("bewakoof_id")
         
-        # 1. Fetch rich description from Bewakoof if possible
+        # 1. Fetch rich description and live specs from Bewakoof if possible with cache
         if bewakoof_id:
             import time
             import requests
-            url = f"{os.getenv('BEWAKOOF_API_BASE_URL', '')}{os.getenv('BEWAKOOF_PDP_ENDPOINT', '')}/{bewakoof_id}"
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-                "App": "ios"
-            }
-            delay = 0.3
-            max_delay = 1.5
-            while delay <= max_delay:
-                try:
-                    resp = requests.get(url, headers=headers, timeout=4)
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        # Override mock rating with true live rating if available!
-                        ratings = data.get("ratings")
-                        if ratings and isinstance(ratings, dict):
-                            product.rating = float(ratings.get("avg") or product.rating)
-                            product.review_count = int(ratings.get("count") or product.review_count)
-                        
-                        desc = data.get("description")
-                        if desc and isinstance(desc, dict):
-                            product.rich_description = desc.get("heading")
-                        break
-                    elif resp.status_code in (403, 429, 500, 502, 503, 504):
+            from src.data.bewakoof_api import _DEEP_ENRICHMENT_CACHE
+            
+            pid_str = str(bewakoof_id)
+            if pid_str in _DEEP_ENRICHMENT_CACHE:
+                data = _DEEP_ENRICHMENT_CACHE[pid_str]
+                ratings = data.get("ratings")
+                if ratings and isinstance(ratings, dict):
+                    product.rating = float(ratings.get("avg") or product.rating)
+                    product.review_count = int(ratings.get("count") or product.review_count)
+                desc = data.get("description")
+                if desc and isinstance(desc, dict):
+                    product.rich_description = desc.get("heading")
+            else:
+                url = f"{os.getenv('BEWAKOOF_API_BASE_URL', '')}{os.getenv('BEWAKOOF_PDP_ENDPOINT', '')}/{bewakoof_id}"
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                    "App": "ios"
+                }
+                delay = 0.3
+                max_delay = 1.5
+                while delay <= max_delay:
+                    try:
+                        resp = requests.get(url, headers=headers, timeout=4)
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            _DEEP_ENRICHMENT_CACHE[pid_str] = data
+                            # Override mock rating with true live rating if available!
+                            ratings = data.get("ratings")
+                            if ratings and isinstance(ratings, dict):
+                                product.rating = float(ratings.get("avg") or product.rating)
+                                product.review_count = int(ratings.get("count") or product.review_count)
+                            
+                            desc = data.get("description")
+                            if desc and isinstance(desc, dict):
+                                product.rich_description = desc.get("heading")
+                            break
+                        elif resp.status_code in (403, 429, 500, 502, 503, 504):
+                            time.sleep(delay)
+                            delay *= 2
+                        else:
+                            break
+                    except Exception as e:
                         time.sleep(delay)
                         delay *= 2
-                    else:
-                        break
-                except Exception as e:
-                    time.sleep(delay)
-                    delay *= 2
 
         # 2. Also try fetching from Shopify Storefront as a fallback or for non-Bewakoof products
         gid = product.specs.get("shopify_gid")

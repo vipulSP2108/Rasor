@@ -92,6 +92,15 @@ class DevCatalogProvider(BaseCatalogProvider):
         self.last_status_message = f"🟢 Retrieved {len(matches)} products from Dev Mock Catalog."
         return matches[:limit]
 
+    def get_products_by_ids(self, ids: List[str]) -> List[Product]:
+        results = []
+        for raw_id in ids:
+            for p in self._products:
+                if p.id == raw_id or str(p.specs.get("bewakoof_id")) in str(raw_id) or raw_id in p.id:
+                    results.append(p)
+                    break
+        return results
+
     def enrich_product(self, product: Product) -> Product:
         # We don't have deep details in the dev catalog beyond what is already returned.
         product.enriched = True

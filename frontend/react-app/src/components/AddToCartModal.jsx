@@ -14,7 +14,7 @@ export default function AddToCartModal({ product, onConfirm, onClose, config }) 
   const variantIds = product.specs?.variant_ids || {}
   const sizes = Object.keys(variantIds)
   const curr = config.currency === 'INR' ? '₹' : '$'
-  
+
   // Calculate existing cart total from active items
   const currentCartTotal = Object.entries(cart.items || {}).reduce((sum, [id, q]) => {
     const p = cart.products[id]
@@ -128,13 +128,13 @@ export default function AddToCartModal({ product, onConfirm, onClose, config }) 
         {/* Guardrail warnings */}
         {budgetExceeded && (
           <div className="alert alert-error" style={{ marginBottom: 12 }}>
-            ⛔ Exceeds hard budget of {curr}{config.maxBudget.toLocaleString()}. Cannot proceed.
+            ⛔ New cart total ({curr}{newCartTotal.toFixed(0)}), Exceeds hard budget of {curr}{config.maxBudget.toLocaleString()}. Cannot proceed.
           </div>
         )}
         {!budgetExceeded && hitlExceeded && (
           <div style={{ marginBottom: 12 }}>
-            <div className="alert alert-warning" style={{ marginBottom: 8 }}>
-              ⚠️ <strong>HITL Approval Required</strong><br />
+            <div className="alert alert-warning" style={{ marginBottom: 8, flexWrap: 'wrap' }}>
+              <div>⚠️ <strong>HITL Approval Required</strong><br /></div>
               New cart total ({curr}{newCartTotal.toFixed(0)}) exceeds auto-approval threshold of {curr}{config.maxCostHitl.toLocaleString()}.
             </div>
             <label className="flex items-center gap-2 text-sm" style={{ cursor: 'pointer' }}>

@@ -72,27 +72,76 @@ def haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return R * c
 
-def calculate_shipping_days(user_city: str) -> int:
-    """Calculates shipping days based on distance to nearest warehouse."""
-    if not user_city or user_city.lower() == "not set":
-        return 4 # Default standard
+PINCODE_MAP = {
+    "11": ("Delhi Hub (North Fulfillment Center)", (28.7041, 77.1025)),
+    "12": ("Gurugram / Haryana Hub", (28.4595, 77.0266)),
+    "40": ("Mumbai Central Warehouse (Bhandup Hub)", (19.0760, 72.8777)),
+    "41": ("Pune Fulfillment Center", (18.5204, 73.8567)),
+    "56": ("Bengaluru Hub (South Fulfillment Center)", (12.9716, 77.5946)),
+    "60": ("Chennai Hub", (13.0827, 80.2707)),
+    "70": ("Kolkata East Hub", (22.5726, 88.3639)),
+    "50": ("Hyderabad Hub", (17.3850, 78.4867)),
+    "38": ("Ahmedabad / Gujarat Hub", (23.0225, 72.5714)),
+    "64": ("Tirupur Textile Hub (TN)", (11.1085, 77.3411)),
+}
+
+def resolve_product_origin(product_specs: dict) -> Tuple[str, Tuple[float, float]]:
+    """Detects manufacturing/warehouse location from product specs."""
+    if not isinstance(product_specs, dict):
+        return "Mumbai Main Warehouse (Bhandup, MH)", (19.0760, 72.8777)
         
-    user_coords = get_coordinates(user_city)
+    mfg = (product_specs.get("manufactured_by") or product_specs.get("packed_by") or "").lower()
+    brand = (product_specs.get("brand") or "").lower()
     
-    # Find closest warehouse
-    min_dist = float('inf')
-    for hub, coords in WAREHOUSES.items():
-        dist = haversine(user_coords[0], user_coords[1], coords[0], coords[1])
-        if dist < min_dist:
-            min_dist = dist
-            
-    # Calculate days based on distance brackets
-    if min_dist < 50:
-        return 1   # Same city / Metro express
-    elif min_dist < 400:
-        return 2   # Regional
-    elif min_dist < 1000:
-        return 3   # National
+    if "bhandup" in mfg or "mumbai" in mfg or "pagal awwrat" in brand or "bewakoof" in brand:
+        return "Mumbai Central Hub (Bhandup, MH)", (19.0760, 72.8777)
+    elif "tirupur" in mfg or "tamil nadu" in mfg:
+        return "Tirupur Textile Hub (Tamil Nadu)", (11.1085, 77.3411)
+    elif "surat" in mfg or "gujarat" in mfg or "ahmedabad" in mfg:
+        return "Surat / Gujarat Hub", (21.1702, 72.8311)
+    elif "delhi" in mfg or "noida" in mfg or "gurugram" in mfg or "haryana" in mfg:
+        return "Delhi NCR Hub", (28.7041, 77.1025)
+    elif "bangalore" in mfg or "bengaluru" in mfg:
+        return "Bengaluru Hub", (12.9716, 77.5946)
+    
+    return "Mumbai Main Warehouse (Bhandup, MH)", (19.0760, 72.8777)
+
+def calculate_detailed_product_shipping(product_specs: dict, user_location_or_pincode: str) -> dict:
+    """Calculates origin hub, user destination coords, distance in KM, and transit time."""
+    origin_name, origin_coords = resolve_product_origin(product_specs)
+    dest_name = user_location_or_pincode or "Mumbai, Maharashtra"
+    
+    # Check pincode prefix
+    pin_clean = "".join(filter(str.isdigit, str(dest_name)))
+    dest_coords = None
+    if len(pin_clean) >= 2 and pin_clean[:2] in PINCODE_MAP:
+        area_label, coords = PINCODE_MAP[pin_clean[:2]]
+        dest_coords = coords
+        dest_name = f"{dest_name} ({area_label.split('(')[0].strip()})"
+    
+    if not dest_coords:
+        dest_coords = get_coordinates(dest_name)
+    
+    dist_km = round(haversine(origin_coords[0], origin_coords[1], dest_coords[0], dest_coords[1]))
+    
+    if dist_km < 60:
+        days = 1
+        speed_label = "⚡ Same-Day / 1-Day Metro Express"
+    elif dist_km < 450:
+        days = 2
+        speed_label = "⚡ 1-2 Days Regional Air Express"
+    elif dist_km < 1200:
+        days = 3
+        speed_label = "✈️ 2-3 Days Fast Transit"
     else:
-        return 5   # Far reaches (e.g. North East, remote)
+        days = 4
+        speed_label = "🚚 3-4 Days Standard Surface"
+        
+    return {
+        "origin_hub": origin_name,
+        "destination": dest_name,
+        "distance_km": dist_km,
+        "shipping_days": days,
+        "speed_label": speed_label
+    }
 

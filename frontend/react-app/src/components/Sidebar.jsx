@@ -1,24 +1,26 @@
 import React, { useState } from 'react'
 import {
   ShoppingBag, MessageCircle, Search, Settings, BookOpen,
-  BarChart2, ChevronLeft, ChevronRight, Zap, Star, FileText, Scale
+  BarChart2, ChevronLeft, ChevronRight, Zap, Star, FileText, Scale, History
 } from 'lucide-react'
 import { useApp } from '../context/AppContext'
 
 const NAV_ITEMS = [
-  { id: 'home',     icon: <ShoppingBag size={18} />, label: 'Shop',       section: 'main' },
-  { id: 'chat',     icon: <MessageCircle size={18} />, label: 'AI Stylist', section: 'main' },
-  { id: 'compare',  icon: <Scale size={18} />,       label: 'Compare',    section: 'main' },
-  { id: 'features', icon: <Zap size={18} />,        label: 'Features',   section: 'main' },
-  { id: 'settings', icon: <Settings size={18} />,   label: 'Settings',   section: 'system' },
-  { id: 'ledger',   icon: <FileText size={18} />,   label: 'Audit Ledger', section: 'system' },
+  { id: 'home', icon: <ShoppingBag size={18} />, label: 'Shop', section: 'main' },
+  { id: 'chat', icon: <MessageCircle size={18} />, label: 'AI Stylist', section: 'main' },
+  { id: 'history', icon: <History size={18} />, label: 'History', section: 'main' },
+  { id: 'compare', icon: <Scale size={18} />, label: 'Compare', section: 'main' },
+  { id: 'features', icon: <Zap size={18} />, label: 'Features', section: 'main' },
+  { id: 'settings', icon: <Settings size={18} />, label: 'Settings', section: 'system' },
+  { id: 'ledger', icon: <FileText size={18} />, label: 'Audit Ledger', section: 'system' },
 ]
 
 export default function Sidebar({ activePage, onNavigate }) {
   const [collapsed, setCollapsed] = useState(false)
-  const { compareList } = useApp()
-  
+  const { compareList, historyRecords = [] } = useApp()
+
   const compareCount = Object.keys(compareList || {}).length
+  const historyCount = historyRecords.length
 
   const sections = ['main', 'system']
   const sectionLabels = { main: 'Commerce', system: 'System' }
@@ -48,10 +50,15 @@ export default function Sidebar({ activePage, onNavigate }) {
                 <span className="nav-icon">{item.icon}</span>
                 {!collapsed && <span className="nav-label">{item.label}</span>}
                 {item.id === 'compare' && compareCount > 0 && (
-                  <span className="sidebar-badge" style={{ marginLeft: 'auto', background: 'var(--accent-red)', color: 'white', fontSize: '10px', padding: '2px 6px', borderRadius: '10px' }}>
+                  <span className="sidebar-badge badge-compare">
                     {compareCount}
                   </span>
                 )}
+                {/* {item.id === 'history' && historyCount > 0 && (
+                  <span className="sidebar-badge badge-history">
+                    {historyCount}
+                  </span>
+                )} */}
               </button>
             ))}
           </div>
