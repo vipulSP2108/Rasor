@@ -10,6 +10,7 @@ import CartDrawer from './components/CartDrawer'
 import ComparePanel from './components/ComparePanel'
 import SettingsPanel from './components/SettingsPanel'
 import FeatureShowcase from './components/FeatureShowcase'
+import HistoryPanel from './components/HistoryPanel'
 import AddToCartModal from './components/AddToCartModal'
 import { useApp } from './context/AppContext'
 
@@ -74,10 +75,11 @@ function AppShell() {
           )}
 
           {page === 'chat' && <ChatInterface onAddToCart={handleAddToCart} />}
+          {page === 'history' && <HistoryPanel onNavigate={navigate} onAddToCart={handleAddToCart} />}
           {page === 'features' && <FeatureShowcase />}
           {page === 'settings' && <SettingsPanel />}
           {page === 'ledger' && <SettingsPanel initialSection="ledger" />}
-          {page === 'compare' && <ComparePanel />}
+          {page === 'compare' && <ComparePanel onAddToCart={handleAddToCart} />}
         </main>
       </div>
 

@@ -65,6 +65,8 @@ def _detect_specific_character(prompt_lower: str) -> Optional[str]:
     return None
 
 
+_DEEP_ENRICHMENT_CACHE: Dict[str, Dict[str, Any]] = {}
+
 class BewakoofCatalogProvider(BaseCatalogProvider):
     """Live API integration with Bewakoof.com using Handle Registry & Universal Schema Mapper."""
 
@@ -338,10 +340,18 @@ class BewakoofCatalogProvider(BaseCatalogProvider):
         return all_products[:limit]
 
     def enrich_product(self, product: Product) -> Product:
-        # Extract numeric id
-        pid = product.id.split("-")[-1] if "-" in product.id else product.id
-        url = f"https://api-prod.bewakoof.com/v2/product/{pid}"
+        # Extract numeric bewakoof id (from specs.bewakoof_id or product.id)
+        raw_pid = product.specs.get("bewakoof_id") or product.id
+        pid = str(raw_pid).split("-")[-1] if "-" in str(raw_pid) else str(raw_pid)
         
+        # 1. Check in-memory cache first to avoid repeating /v2/product/{pid} calls
+        if pid in _DEEP_ENRICHMENT_CACHE:
+            data = _DEEP_ENRICHMENT_CACHE[pid]
+            self._apply_enrichment_data(product, data)
+            product.enriched = True
+            return product
+
+        url = f"https://api-prod.bewakoof.com/v2/product/{pid}"
         delay = 0.3
         max_delay = 1.5
         
@@ -350,20 +360,15 @@ class BewakoofCatalogProvider(BaseCatalogProvider):
                 resp = requests.get(url, headers=self._headers(), timeout=4)
                 if resp.status_code == 200:
                     data = resp.json()
-                    ratings = data.get("ratings")
-                    if ratings and isinstance(ratings, dict):
-                        product.rating = float(ratings.get("avg") or product.rating)
-                        product.review_count = int(ratings.get("count") or product.review_count)
-                    
-                    desc = data.get("description")
-                    if desc and isinstance(desc, dict):
-                        product.rich_description = desc.get("heading")
+                    # Cache in memory
+                    _DEEP_ENRICHMENT_CACHE[pid] = data
+                    self._apply_enrichment_data(product, data)
                     product.enriched = True
                     break
                 elif resp.status_code in (403, 429, 500, 502, 503, 504):
                     print(f"[Bewakoof] Enrich {pid} got HTTP {resp.status_code}. Backing off {delay:.2f}s...")
                     time.sleep(delay)
-                    delay *= 2  # 0.3s -> 0.6s -> 1.2s -> exceeds 1.5s
+                    delay *= 2
                 else:
                     print(f"[Bewakoof] Enrich {pid} got HTTP {resp.status_code}. Proceeding.")
                     break
@@ -373,3 +378,97 @@ class BewakoofCatalogProvider(BaseCatalogProvider):
                 delay *= 2
                 
         return product
+
+    def _apply_enrichment_data(self, product: Product, data: Dict[str, Any]):
+        """Hydrates a product with live manufacturer specs from Bewakoof v2 data."""
+        # 1. Ratings & Reviews
+        ratings = data.get("ratings")
+        if ratings and isinstance(ratings, dict):
+            avg_r = ratings.get("avg") or ratings.get("average")
+            cnt_r = ratings.get("count") or ratings.get("total")
+            if avg_r: product.rating = float(avg_r)
+            if cnt_r: product.review_count = int(cnt_r)
+
+        # 2. Rich Description
+        desc = data.get("description")
+        if desc and isinstance(desc, dict):
+            product.rich_description = desc.get("heading") or desc.get("text") or desc.get("body")
+        elif isinstance(desc, str):
+            product.rich_description = desc
+
+        # 3. Deep Specs & Properties
+        props = data.get("properties") or {}
+        if isinstance(props, dict):
+            if props.get("fabric") or props.get("fabric_tag"):
+                product.specs["fabric"] = props.get("fabric") or props.get("fabric_tag")
+            if props.get("fit"):
+                product.specs["fit"] = props.get("fit")
+            if props.get("sleeve_style") or props.get("sleeve"):
+                product.specs["sleeve"] = props.get("sleeve_style") or props.get("sleeve")
+            if props.get("neck_collar"):
+                product.specs["neck"] = props.get("neck_collar")
+            if props.get("fabric_care"):
+                product.specs["wash_care"] = props.get("fabric_care")
+            if props.get("occasion") or props.get("suitable_for"):
+                product.specs["occasion"] = props.get("occasion") or props.get("suitable_for")
+            if props.get("brand"):
+                product.specs["brand"] = props.get("brand")
+            if props.get("manufactured_by"):
+                product.specs["manufactured_by"] = props.get("manufactured_by")
+            if props.get("packed_by"):
+                product.specs["packed_by"] = props.get("packed_by")
+            if data.get("seller"):
+                seller = data.get("seller")
+                product.specs["seller_name"] = seller.get("name") if isinstance(seller, dict) else str(seller)
+
+            # Extract 6-digit pin from manufactured_by or packed_by
+            mfg_text = str(props.get("manufactured_by") or props.get("packed_by") or "")
+            import re
+            pin_m = re.search(r"\b([1-9][0-9]{5})\b", mfg_text)
+            if pin_m:
+                product.specs["origin_pincode"] = pin_m.group(1)
+            elif "bhandup" in mfg_text.lower() or "mumbai-42" in mfg_text.lower():
+                product.specs["origin_pincode"] = "400042"
+
+        # 4. Brand & Variants
+        brand_info = data.get("brand")
+        if isinstance(brand_info, dict) and brand_info.get("name"):
+            product.specs["brand"] = brand_info.get("name")
+        elif isinstance(brand_info, str):
+            product.specs["brand"] = brand_info
+
+        variants = data.get("variant")
+        if variants and isinstance(variants, list):
+            sizes = [v.get("title") or v.get("size") for v in variants if v.get("title") or v.get("size")]
+            if sizes: product.specs["available_sizes"] = sizes
+            first_var = variants[0] if variants else {}
+            if first_var.get("weight"):
+                product.specs["weight"] = f"{first_var.get('weight')} {first_var.get('weight_unit', 'g')}"
+
+    def get_products_by_ids(self, ids: List[str]) -> List[Product]:
+        """Fetches products for given IDs from memory cache or catalog without re-scraping."""
+        if not ids:
+            return []
+        results = []
+        for raw_id in ids:
+            pid = str(raw_id).split("-")[-1] if "-" in str(raw_id) else str(raw_id)
+            if pid in _DEEP_ENRICHMENT_CACHE:
+                cached_data = _DEEP_ENRICHMENT_CACHE[pid]
+                title = cached_data.get("name") or cached_data.get("title") or f"Bewakoof Product {pid}"
+                price = float(cached_data.get("price") or 799.0)
+                img = cached_data.get("images", [{}])[0].get("url") if cached_data.get("images") else ""
+                prod = Product(
+                    id=f"bewakoof-{pid}",
+                    title=title,
+                    price=price,
+                    merchant="bewakoof",
+                    specs={"display_image": img, "bewakoof_id": pid}
+                )
+                self._apply_enrichment_data(prod, cached_data)
+                results.append(prod)
+            else:
+                for p in self.fallback._products:
+                    if p.id == raw_id or str(p.specs.get("bewakoof_id")) == pid or pid in p.id:
+                        results.append(p)
+                        break
+        return results

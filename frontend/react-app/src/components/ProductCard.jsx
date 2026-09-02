@@ -1,6 +1,7 @@
 import React from 'react';
-import { Star, ShoppingCart, Scale, Check } from 'lucide-react'
+import { Star, ShoppingCart, Scale, Check, X } from 'lucide-react'
 import { useApp } from '../context/AppContext'
+import toast from 'react-hot-toast'
 
 export default function ProductCard({ product, onAddToCart, layout = 'grid' }) {
   const { cart, compareList, toggleCompare } = useApp()
@@ -13,6 +14,15 @@ export default function ProductCard({ product, onAddToCart, layout = 'grid' }) {
   const handleCompare = (e) => {
     e.stopPropagation()
     toggleCompare(product)
+    if (inCompare) {
+      toast.success(`Removed "${product.title?.slice(0, 22)}..." from Compare`)
+    } else {
+      if (Object.keys(compareList).length >= 5) {
+        toast.error('Compare limit reached (max 5 items)')
+      } else {
+        toast.success(`Added "${product.title?.slice(0, 22)}..." to Compare`)
+      }
+    }
   }
 
   const verdictColor = {
@@ -22,8 +32,13 @@ export default function ProductCard({ product, onAddToCart, layout = 'grid' }) {
 
   return (
     <div
-      className="product-card animate-slide-up"
-      style={{ borderTopColor: verdictColor, borderTopWidth: 2 }}
+      className={`product-card animate-slide-up ${inCompare ? 'in-compare-active' : ''}`}
+      style={{ 
+        borderTopColor: verdictColor, 
+        borderTopWidth: 2,
+        borderColor: inCompare ? 'rgba(99, 102, 241, 0.6)' : undefined,
+        boxShadow: inCompare ? '0 0 16px rgba(99, 102, 241, 0.25)' : undefined,
+      }}
     >
       <div className="product-card-image">
         <img src={imgUrl} alt={product.title} loading="lazy" />
@@ -32,18 +47,14 @@ export default function ProductCard({ product, onAddToCart, layout = 'grid' }) {
           <div className="product-card-badge">✦ Best Match</div>
         )}
 
-        <div className="product-card-actions">
+        {/* Constant compact icon button (always visible and highlighted when in compare) */}
+        <div className={`product-card-actions ${inCompare ? 'active' : ''}`}>
           <button
-            className="product-card-action-btn"
+            className={`product-card-action-btn ${inCompare ? 'active' : ''}`}
             onClick={handleCompare}
-            title={inCompare ? 'Remove from compare' : 'Add to compare'}
-            style={{ 
-              background: inCompare ? 'var(--accent-red)' : undefined, 
-              color: inCompare ? '#fff' : undefined,
-              borderColor: inCompare ? 'var(--accent-red)' : undefined 
-            }}
+            title={inCompare ? "In Compare (Click to remove)" : "Add to compare"}
           >
-            {inCompare ? <Check size={14} /> : <Scale size={14} />}
+            {inCompare ? <Check size={15} /> : <Scale size={14} />}
           </button>
         </div>
       </div>

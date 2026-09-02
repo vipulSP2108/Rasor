@@ -1,11 +1,10 @@
-import React from 'react';
-import { useState } from 'react'
-import { Search, Sliders, Grid, List, ChevronDown, ChevronUp, Package, Trash2, ChevronLeft, ChevronRight } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { Search, Sliders, Grid, List, ChevronDown, ChevronUp, Package, Trash2, ChevronLeft, ChevronRight, History, RotateCcw, Sparkles } from 'lucide-react'
 import { searchProducts } from '../api/client'
 import { useApp } from '../context/AppContext'
 import ProductCard from './ProductCard'
+import BatchedProductGrid from './BatchedProductGrid'
 import toast from 'react-hot-toast'
-import { useEffect } from 'react'
 
 const QUICK_SEARCHES = [
   'Black oversized t-shirt',
@@ -16,13 +15,26 @@ const QUICK_SEARCHES = [
 ]
 
 export default function SearchPage({ onAddToCart }) {
-  const { config } = useApp()
-  const [query, setQuery] = useState('')
-  const [results, setResults] = useState([])
-  const [discardedProducts, setDiscardedProducts] = useState([])
-  const [evaluations, setEvaluations] = useState([])
-  const [canonicalQuery, setCanonicalQuery] = useState(null)
-  const [status, setStatus] = useState(null)
+  const { 
+    config, 
+    searchState, 
+    setSearchState, 
+    searchHistory, 
+    saveSearchSnapshot, 
+    restoreSearchSnapshot, 
+    clearSearchHistory,
+    addHistoryRecord
+  } = useApp()
+
+  const {
+    query = '',
+    results = [],
+    discardedProducts = [],
+    evaluations = [],
+    canonicalQuery = null,
+    status = null,
+  } = searchState
+
   const [loading, setLoading] = useState(false)
   const [loadingStage, setLoadingStage] = useState(0)
   const [layout, setLayout] = useState('grid')
@@ -51,11 +63,14 @@ export default function SearchPage({ onAddToCart }) {
   const runSearch = async (q = query) => {
     if (!q.trim()) return
     setLoading(true)
-    setResults([])
-    setDiscardedProducts([])
-    setEvaluations([])
-    setCanonicalQuery(null)
-    setStatus(null)
+    setSearchState({
+      query: q,
+      results: [],
+      discardedProducts: [],
+      evaluations: [],
+      canonicalQuery: null,
+      status: null,
+    })
     setCurrentPage(1)
 
     try {
@@ -72,18 +87,51 @@ export default function SearchPage({ onAddToCart }) {
         truth_hierarchy: config.truthHierarchy,
         enable_semantic_engine: config.enableSemanticEngine,
         currency: config.currency,
+        user_location: config.userLocation,
       })
-      setResults(data.products || [])
-      setDiscardedProducts(data.discarded_products || [])
-      setEvaluations(data.evaluations || [])
-      setCanonicalQuery(data.canonical_query)
-      setStatus(data.status)
-      if (!data.products?.length) toast('No matching products found', { icon: '🔍' })
+      const prods = data.products || []
+      const disc = data.discarded_products || []
+      const evals = data.evaluations || []
+      const cq = data.canonical_query
+      const st = data.status
+
+      setSearchState({
+        query: q,
+        results: prods,
+        discardedProducts: disc,
+        evaluations: evals,
+        canonicalQuery: cq,
+        status: st,
+      })
+
+      if (prods.length > 0) {
+        saveSearchSnapshot({
+          query: q,
+          results: prods,
+          discardedProducts: disc,
+          evaluations: evals,
+          canonicalQuery: cq,
+          status: st,
+        })
+        addHistoryRecord({
+          source: 'search',
+          query: q,
+          canonicalQuery: cq,
+          products: prods,
+        })
+      } else {
+        toast('No matching products found', { icon: '🔍' })
+      }
     } catch (err) {
       toast.error('Search failed: ' + (err.response?.data?.detail || err.message))
     } finally {
       setLoading(false)
     }
+  }
+
+  const handleRestore = (s) => {
+    restoreSearchSnapshot(s.id)
+    toast.success(`Restored previous search: "${s.query}"`)
   }
 
   return (
@@ -98,7 +146,7 @@ export default function SearchPage({ onAddToCart }) {
               style={{ paddingLeft: 40 }}
               placeholder="e.g. Solid black t-shirt for men, oversized fit"
               value={query}
-              onChange={e => setQuery(e.target.value)}
+              onChange={e => setSearchState({ query: e.target.value })}
               onKeyDown={e => e.key === 'Enter' && runSearch()}
             />
           </div>
@@ -107,13 +155,56 @@ export default function SearchPage({ onAddToCart }) {
           </button>
         </div>
 
-        {/* Quick chips */}
+        {/* Recent Search Snapshots */}
+        {searchHistory && searchHistory.length > 0 && (
+          <div style={{ marginBottom: 12, paddingBottom: 10, borderBottom: '1px solid rgba(255, 255, 255, 0.07)' }}>
+            <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
+              <span className="text-xs text-muted" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                <History size={12} color="var(--accent-purple)" />
+                <strong>Recent Searches & Snapshots:</strong> (Click to restore instantly)
+              </span>
+              <button 
+                className="btn btn-ghost btn-xs" 
+                onClick={clearSearchHistory}
+                style={{ fontSize: '0.7rem', color: 'var(--text-muted)', padding: '1px 6px' }}
+              >
+                Clear History
+              </button>
+            </div>
+            <div className="flex gap-2" style={{ flexWrap: 'wrap' }}>
+              {searchHistory.map(s => (
+                <button
+                  key={s.id}
+                  className="chat-chip"
+                  style={{ 
+                    fontSize: '0.78rem',
+                    background: query.toLowerCase() === s.query.toLowerCase() ? 'rgba(99, 102, 241, 0.25)' : 'rgba(255, 255, 255, 0.05)',
+                    borderColor: query.toLowerCase() === s.query.toLowerCase() ? 'var(--accent-purple)' : 'rgba(255, 255, 255, 0.1)',
+                  }}
+                  onClick={() => handleRestore(s)}
+                  title={`Restores exact ${s.resultsCount} picks from ${s.timestamp}`}
+                >
+                  <RotateCcw size={11} style={{ opacity: 0.7 }} />
+                  <span>{s.query}</span>
+                  <span className="badge badge-purple" style={{ fontSize: '0.65rem', padding: '1px 5px', marginLeft: 4 }}>
+                    {s.resultsCount}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Quick Suggestion Chips */}
         <div className="flex gap-2" style={{ flexWrap: 'wrap' }}>
+          <span className="text-xs text-muted" style={{ display: 'flex', alignItems: 'center', marginRight: 4 }}>
+            💡 Quick Ideas:
+          </span>
           {QUICK_SEARCHES.map(q => (
             <button
               key={q}
               className="chat-chip"
-              onClick={() => { setQuery(q); runSearch(q) }}
+              onClick={() => { setSearchState({ query: q }); runSearch(q) }}
             >{q}</button>
           ))}
         </div>
@@ -152,15 +243,13 @@ export default function SearchPage({ onAddToCart }) {
             </div>
           </div>
 
-          {layout === 'carousel' ? (
-            <div className="product-carousel">
-              {results.slice((currentPage - 1) * pageSize, currentPage * pageSize).map(p => <ProductCard key={p.id} product={p} onAddToCart={onAddToCart} />)}
-            </div>
-          ) : (
-            <div className="product-grid">
-              {results.slice((currentPage - 1) * pageSize, currentPage * pageSize).map(p => <ProductCard key={p.id} product={p} onAddToCart={onAddToCart} />)}
-            </div>
-          )}
+          <BatchedProductGrid 
+            products={results.slice((currentPage - 1) * pageSize, currentPage * pageSize)} 
+            onAddToCart={onAddToCart} 
+            layout={layout === 'carousel' ? 'carousel' : 'grid'}
+            batchSize={4}
+            batchDelay={120}
+          />
 
           {/* Pagination */}
           {results.length > pageSize && (

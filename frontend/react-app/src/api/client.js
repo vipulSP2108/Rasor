@@ -17,3 +17,5 @@ export const getOrders = (limit = 5) => api.get(`/api/shopify/orders?limit=${lim
 export const getLedger = () => api.get('/api/ledger')
 export const clearLedger = () => api.delete('/api/ledger')
 export const getRazorpayKey = () => api.get('/api/razorpay-key')
+export const estimateLogistics = (data) => api.post('/api/logistics/estimate', data)
+export const getProductsByIds = (data) => api.post('/api/products/by-ids', data)
