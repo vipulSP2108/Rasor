@@ -301,8 +301,20 @@ export default function SettingsPanel() {
             <span className="text-sm text-muted">{config.maxDeepFetches} products</span>
           </div>
         </Row>
-        <Row label="VQA Vision Scanner" hint="Uses multimodal AI vision to inspect garment prints">
+        <Row 
+          label="Always Run VQA Scanner" 
+          hint={config.enableVqaScanner 
+            ? "ON: Multimodal VQA Vision scans candidates on EVERY query" 
+            : "OFF (Smart Auto): VQA only runs when visual intent (graphics, print, character) is asked"}
+        >
           <Toggle checked={config.enableVqaScanner} onChange={v => updateConfig({ enableVqaScanner: v })} />
+        </Row>
+        <Row label="VQA Scan Limit" hint="Max products sent to VQA vision — higher = more accurate but slower & costlier">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 200 }}>
+            <input type="range" className="range-input" min={1} max={20}
+              value={config.vqaLimit ?? 8} onChange={e => updateConfig({ vqaLimit: +e.target.value })} />
+            <span className="text-sm text-muted">{config.vqaLimit ?? 8} products scanned by Vision</span>
+          </div>
         </Row>
         <Row label="Strict VQA Filtering" hint="Only scan products that pass text constraints first">
           <Toggle checked={config.vqaStrictFilter} onChange={v => updateConfig({ vqaStrictFilter: v })} />
@@ -312,6 +324,9 @@ export default function SettingsPanel() {
         </Row>
         <Row label="Semantic Pop-Culture Engine" hint="Expands fandom queries (e.g. 'Panther' → Wakanda, T'Challa)">
           <Toggle checked={config.enableSemanticEngine} onChange={v => updateConfig({ enableSemanticEngine: v })} />
+        </Row>
+        <Row label="Show AI Match Percentage" hint="Display exact AI model accuracy (e.g. 🧠 95% Match) on product cards vs categorical badge (✦ Best Match)">
+          <Toggle checked={config.showMatchPercentage ?? true} onChange={v => updateConfig({ showMatchPercentage: v })} />
         </Row>
         <Row label="Offer Engine" hint="Evaluates cart against merchant discounts & promos">
           <Toggle checked={config.enableOfferEngine} onChange={v => updateConfig({ enableOfferEngine: v })} />
