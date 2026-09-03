@@ -21,7 +21,7 @@ const INITIAL_MESSAGES = [
 ]
 
 export default function ChatInterface({ onAddToCart }) {
-  const { config, chatMessages, setChatMessages, clearChatMessages, addHistoryRecord } = useApp()
+  const { config, chatMessages, setChatMessages, clearChatMessages, addHistoryRecord, setCandidateBuffer } = useApp()
   const [input, setInput] = useState('')
   const [isThinking, setIsThinking] = useState(false)
   const [isSearching, setIsSearching] = useState(false)
@@ -129,6 +129,9 @@ export default function ChatInterface({ onAddToCart }) {
           })
           const prods = searchData.products || []
           if (prods.length > 0) {
+            if (prods.length > 1) {
+              setCandidateBuffer(prods.slice(1, 6))
+            }
             setChatMessages(prev => [...prev, {
               role: 'assistant',
               content: `✨ Found **${prods.length}** curated picks matching your style! Browse them below:`,

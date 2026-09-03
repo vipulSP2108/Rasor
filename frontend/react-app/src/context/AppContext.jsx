@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react'
-import { getProductsByIds } from '../api/client'
+import { getProductsByIds, cancelPaymentLink } from '../api/client'
 
 const AppContext = createContext(null)
 
@@ -26,6 +26,31 @@ const DEFAULT_CONFIG = {
   voiceEnabled: true,
   voiceURI: null,
   showMatchPercentage: true,
+  paymentLinkExpiryMinutes: 15,
+  paymentBufferMinutes: 1,
+}
+
+const DEFAULT_USER_PROFILE = {
+  fullName: 'Vipul Patil',
+  email: 'vipulapatil21@gmail.com',
+  phone: '+918806549952',
+  defaultSize: 'XL',
+  preferredFit: 'Regular Fit',
+  preferredColor: 'Any',
+  primaryBank: 'CNRB',
+  primaryBankLabel: 'Canara Bank',
+  secondaryBank: 'BARB_R',
+  secondaryBankLabel: 'Bank of Baroda',
+  fallbackCard: {
+    nickname: 'Test Visa Card',
+    last4: '1007',
+    cardNumber: '4100 2800 0000 1007',
+    exp: '12/28',
+    cvv: '123',
+    holder: 'Vipul Patil'
+  },
+  enableSmsNotification: true,
+  enableWhatsappRescue: true
 }
 
 const INITIAL_CHAT_MESSAGES = [
@@ -59,7 +84,7 @@ const loadLocalJson = (key, fallback) => {
 const saveLocalJson = (key, val) => {
   try {
     localStorage.setItem(key, JSON.stringify(val))
-  } catch (e) {}
+  } catch (e) { }
 }
 
 const loadSessionJson = (key, fallback) => {
@@ -74,13 +99,13 @@ const loadSessionJson = (key, fallback) => {
 const saveSessionJson = (key, val) => {
   try {
     sessionStorage.setItem(key, JSON.stringify(val))
-  } catch (e) {}
+  } catch (e) { }
 }
 
 export function extractQueryMetadata(queryStr = '', canonical = {}, config = {}) {
   const q = (queryStr || '').toLowerCase()
   const c = canonical || {}
-  
+
   // 👤 Gender
   let gender = c.gender || 'All'
   if (gender === 'All') {
@@ -167,16 +192,39 @@ export function extractQueryMetadata(queryStr = '', canonical = {}, config = {})
   return { gender, category, fandom, occasion, color, design, size, fit, sleeve, budgetCap }
 }
 
+const DEFAULT_CART = {
+  cartId: 'cart_local_user',
+  shopifyCartId: null,
+  checkoutUrl: null,
+  quantity: 0,
+  total: 0,
+  items: {},        // { productId: qty }
+  products: {},     // { productId: Product }
+}
+
 export function AppProvider({ children }) {
-  const [config, setConfig] = useState(DEFAULT_CONFIG)
-  const [cart, setCart] = useState({
-    shopifyCartId: null,
-    checkoutUrl: null,
-    quantity: 0,
-    total: 0,
-    items: {},        // { productId: qty }
-    products: {},     // { productId: Product }
+  const [config, setConfig] = useState(() => {
+    const saved = loadLocalJson('rasor_config_state', null)
+    return saved ? { ...DEFAULT_CONFIG, ...saved } : DEFAULT_CONFIG
   })
+
+  // Auto-persist config so demoMode and all settings stay preserved across refreshes
+  useEffect(() => {
+    saveLocalJson('rasor_config_state', config)
+  }, [config])
+
+  const [cart, setCart] = useState(() => {
+    const loaded = loadLocalJson('rasor_cart_state', null)
+    if (loaded && typeof loaded === 'object' && loaded.items && loaded.products) {
+      return loaded
+    }
+    return { ...DEFAULT_CART, cartId: `cart_${Date.now()}` }
+  })
+
+  // Auto-persist cart to localStorage so refresh preserves all items and cartId
+  useEffect(() => {
+    saveLocalJson('rasor_cart_state', cart)
+  }, [cart])
   const [compareList, setCompareListState] = useState({})
   const getDeterministicCustomerId = (email) => {
     if (!email) return 'cust_vipulapatil21'
@@ -185,7 +233,7 @@ export function AppProvider({ children }) {
   }
 
   // Multi-account mandate token store: { [email]: { token, customerId, maxLimit } }
-  const [mandatesByEmail, setMandatesByEmail] = useState(() => 
+  const [mandatesByEmail, setMandatesByEmail] = useState(() =>
     loadLocalJson('rasor_mandates_by_email', {
       'vipulapatil21@gmail.com': {
         token: loadLocalJson('rasor_rzp_token', null),
@@ -198,13 +246,13 @@ export function AppProvider({ children }) {
   const activeEmail = config.customerEmail || 'vipulapatil21@gmail.com'
   const emailMandate = mandatesByEmail[activeEmail] || {}
 
-  const [razorpayToken, setRazorpayToken] = useState(() => 
+  const [razorpayToken, setRazorpayToken] = useState(() =>
     emailMandate.token || loadLocalJson('rasor_rzp_token', null)
   )
-  const [razorpayCustomerId, setRazorpayCustomerId] = useState(() => 
+  const [razorpayCustomerId, setRazorpayCustomerId] = useState(() =>
     emailMandate.customerId || getDeterministicCustomerId(activeEmail)
   )
-  const [tokenMaxLimit, setTokenMaxLimit] = useState(() => 
+  const [tokenMaxLimit, setTokenMaxLimit] = useState(() =>
     emailMandate.maxLimit || loadLocalJson('rasor_rzp_token_max_limit', 800)
   )
 
@@ -213,7 +261,7 @@ export function AppProvider({ children }) {
     const email = config.customerEmail || 'vipulapatil21@gmail.com'
     const stored = mandatesByEmail[email]
     const derivedCustId = stored?.customerId || getDeterministicCustomerId(email)
-    
+
     setRazorpayCustomerId(derivedCustId)
     setRazorpayToken(stored?.token || null)
     setTokenMaxLimit(stored?.maxLimit || null)
@@ -223,7 +271,7 @@ export function AppProvider({ children }) {
     if (!tokenId) return
     const email = emailOverride || config.customerEmail || 'vipulapatil21@gmail.com'
     const custId = customerId || getDeterministicCustomerId(email)
-    
+
     setMandatesByEmail(prev => {
       const existing = prev[email] || {}
       const newMax = amount ? Math.max(Number(existing.maxLimit || 0), Number(amount)) : (existing.maxLimit || 800)
@@ -257,7 +305,7 @@ export function AppProvider({ children }) {
   const updateMandateLimit = useCallback((limit, emailOverride) => {
     const num = Number(limit) || 0
     const email = emailOverride || config.customerEmail || 'vipulapatil21@gmail.com'
-    
+
     setMandatesByEmail(prev => {
       const existing = prev[email] || {}
       const updated = {
@@ -277,7 +325,7 @@ export function AppProvider({ children }) {
 
   const updateMandateTokenId = useCallback((token, emailOverride) => {
     const email = emailOverride || config.customerEmail || 'vipulapatil21@gmail.com'
-    
+
     setMandatesByEmail(prev => {
       const existing = prev[email] || {}
       const updated = {
@@ -301,7 +349,7 @@ export function AppProvider({ children }) {
 
   const clearMandateToken = useCallback((emailOverride) => {
     const email = emailOverride || config.customerEmail || 'vipulapatil21@gmail.com'
-    
+
     setMandatesByEmail(prev => {
       const next = { ...prev }
       delete next[email]
@@ -314,11 +362,11 @@ export function AppProvider({ children }) {
     try {
       localStorage.removeItem('rasor_rzp_token')
       localStorage.removeItem('rasor_rzp_token_max_limit')
-    } catch {}
+    } catch { }
   }, [config.customerEmail])
 
   // In-memory / session product cache by ID
-  const [productCache, setProductCache] = useState(() => 
+  const [productCache, setProductCache] = useState(() =>
     loadSessionJson('rasor_product_cache', {})
   )
 
@@ -355,18 +403,18 @@ export function AppProvider({ children }) {
   }, [cacheProducts])
 
   // Persistent Chat & Search State
-  const [chatMessages, setChatMessagesState] = useState(() => 
+  const [chatMessages, setChatMessagesState] = useState(() =>
     loadSessionJson('rasor_chat_messages', INITIAL_CHAT_MESSAGES)
   )
-  const [searchState, setSearchStateInternal] = useState(() => 
+  const [searchState, setSearchStateInternal] = useState(() =>
     loadSessionJson('rasor_search_state', INITIAL_SEARCH_STATE)
   )
-  const [searchHistory, setSearchHistory] = useState(() => 
+  const [searchHistory, setSearchHistory] = useState(() =>
     loadSessionJson('rasor_search_history', [])
   )
 
   // Global Lightweight History Records (localStorage)
-  const [historyRecords, setHistoryRecords] = useState(() => 
+  const [historyRecords, setHistoryRecords] = useState(() =>
     loadLocalJson('rasor_persistent_history', [])
   )
 
@@ -377,9 +425,9 @@ export function AppProvider({ children }) {
       const record = {
         id: `hist_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
         timestamp: new Date().toISOString(),
-        formattedDate: new Date().toLocaleString([], { 
-          month: 'short', day: 'numeric', year: 'numeric', 
-          hour: '2-digit', minute: '2-digit' 
+        formattedDate: new Date().toLocaleString([], {
+          month: 'short', day: 'numeric', year: 'numeric',
+          hour: '2-digit', minute: '2-digit'
         }),
         source: entry.source || 'chat', // 'chat' | 'search'
         query: entry.query,
@@ -426,13 +474,25 @@ export function AppProvider({ children }) {
     saveSessionJson('rasor_chat_messages', INITIAL_CHAT_MESSAGES)
   }, [])
 
+  const [candidateBuffer, setCandidateBufferState] = useState(() =>
+    loadSessionJson('rasor_candidate_buffer', [])
+  )
+
+  const setCandidateBuffer = useCallback((buffer) => {
+    setCandidateBufferState(buffer)
+    saveSessionJson('rasor_candidate_buffer', buffer)
+  }, [])
+
   const setSearchState = useCallback((patch) => {
     setSearchStateInternal(prev => {
       const next = typeof patch === 'function' ? patch(prev) : { ...prev, ...patch }
       saveSessionJson('rasor_search_state', next)
+      if (next.results && next.results.length > 1) {
+        setCandidateBuffer(next.results.slice(1, 6))
+      }
       return next
     })
-  }, [])
+  }, [setCandidateBuffer])
 
   const saveSearchSnapshot = useCallback((snapshot) => {
     if (!snapshot || !snapshot.query) return
@@ -486,12 +546,13 @@ export function AppProvider({ children }) {
       const prevQty = c.items[product.id] || 0
       const newItems = { ...c.items, [product.id]: prevQty + qty }
       const newProducts = { ...c.products, [product.id]: product }
-      
+
       const newQty = Object.values(newItems).reduce((sum, q) => sum + q, 0)
       const newTotal = Object.entries(newItems).reduce((sum, [id, q]) => sum + ((newProducts[id]?.price || 0) * q), 0)
 
       return {
         ...c,
+        cartId: c.cartId || `cart_${Date.now()}`,
         shopifyCartId: shopifyData?.cart_id || c.shopifyCartId,
         checkoutUrl: shopifyData?.checkout_url || c.checkoutUrl,
         quantity: newQty,
@@ -503,6 +564,12 @@ export function AppProvider({ children }) {
   }, [])
 
   const removeFromCart = useCallback((productId) => {
+    // Invalidate payment link if cart contents change
+    const activePlink = loadLocalJson('rasor_active_plink', null)
+    if (activePlink?.plink_id) {
+      cancelPaymentLink(activePlink.plink_id).catch(() => { })
+      localStorage.removeItem('rasor_active_plink')
+    }
     setCart(c => {
       const newItems = { ...c.items }
       const newProducts = { ...c.products }
@@ -521,6 +588,12 @@ export function AppProvider({ children }) {
   }, [])
 
   const updateQty = useCallback((productId, newQty) => {
+    // Invalidate payment link if quantity changes
+    const activePlink = loadLocalJson('rasor_active_plink', null)
+    if (activePlink?.plink_id) {
+      cancelPaymentLink(activePlink.plink_id).catch(() => { })
+      localStorage.removeItem('rasor_active_plink')
+    }
     setCart(c => {
       if (newQty <= 0) {
         const newItems = { ...c.items }
@@ -544,7 +617,15 @@ export function AppProvider({ children }) {
   }, [])
 
   const clearCart = useCallback(() => {
-    setCart({ shopifyCartId: null, checkoutUrl: null, quantity: 0, total: 0, items: {}, products: {} })
+    // Immediately cancel and expire active payment link on Razorpay servers
+    const activePlink = loadLocalJson('rasor_active_plink', null)
+    if (activePlink?.plink_id) {
+      cancelPaymentLink(activePlink.plink_id).catch(() => { })
+      localStorage.removeItem('rasor_active_plink')
+    }
+    const fresh = { ...DEFAULT_CART, cartId: `cart_${Date.now()}` }
+    setCart(fresh)
+    saveLocalJson('rasor_cart_state', fresh)
   }, [])
 
   const setShopifyCart = useCallback((cartId, checkoutUrl) => {
@@ -586,9 +667,22 @@ export function AppProvider({ children }) {
     saveLocalJson('rasor_compare_ids', [])
   }, [])
 
+  const [userProfile, setUserProfileState] = useState(() =>
+    loadLocalJson('rasor_user_profile', DEFAULT_USER_PROFILE)
+  )
+
+  const updateUserProfile = useCallback((patch) => {
+    setUserProfileState(prev => {
+      const next = typeof patch === 'function' ? patch(prev) : { ...prev, ...patch }
+      saveLocalJson('rasor_user_profile', next)
+      return next
+    })
+  }, [])
+
   return (
     <AppContext.Provider value={{
       config, updateConfig,
+      userProfile, updateUserProfile,
       cart, addToCartLocal, removeFromCart, updateQty, clearCart, setShopifyCart,
       compareList, toggleCompare, updateCompareProducts, clearCompare,
       chatMessages, setChatMessages, clearChatMessages,
@@ -601,6 +695,7 @@ export function AppProvider({ children }) {
       tokenMaxLimit, setTokenMaxLimit,
       saveMandateToken, clearMandateToken,
       updateMandateLimit, updateMandateTokenId,
+      candidateBuffer, setCandidateBuffer,
     }}>
       {children}
     </AppContext.Provider>

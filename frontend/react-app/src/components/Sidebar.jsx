@@ -1,18 +1,19 @@
 import React, { useState } from 'react'
 import {
   ShoppingBag, MessageCircle, Search, Settings, BookOpen,
-  BarChart2, ChevronLeft, ChevronRight, Zap, Star, FileText, Scale, History
+  BarChart2, ChevronLeft, ChevronRight, Zap, Star, FileText, Scale, History, User, PackageCheck
 } from 'lucide-react'
 import { useApp } from '../context/AppContext'
 
 const NAV_ITEMS = [
   { id: 'home', icon: <ShoppingBag size={18} />, label: 'Shop', section: 'main' },
-  { id: 'chat', icon: <MessageCircle size={18} />, label: 'AI Stylist', section: 'main' },
+  // { id: 'chat', icon: <MessageCircle size={18} />, label: 'AI Stylist', section: 'main' },
+  { id: 'profile', icon: <User size={18} />, label: 'My Profile', section: 'main' },
+  { id: 'orders', icon: <PackageCheck size={18} />, label: 'Orders & Ledger', section: 'main' },
   { id: 'history', icon: <History size={18} />, label: 'History', section: 'main' },
   { id: 'compare', icon: <Scale size={18} />, label: 'Compare', section: 'main' },
   { id: 'features', icon: <Zap size={18} />, label: 'Features', section: 'main' },
   { id: 'settings', icon: <Settings size={18} />, label: 'Settings', section: 'system' },
-  { id: 'ledger', icon: <FileText size={18} />, label: 'Audit Ledger', section: 'system' },
 ]
 
 export default function Sidebar({ activePage, onNavigate }) {

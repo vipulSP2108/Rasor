@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import React, { useState, useEffect, useMemo } from 'react'
 import { Search, Sliders, Grid, List, ChevronDown, ChevronUp, Package, Trash2, ChevronLeft, ChevronRight, History, RotateCcw, Sparkles, Truck, Star } from 'lucide-react'
 import { searchProducts, estimateLogistics } from '../api/client'
 import { useApp } from '../context/AppContext'

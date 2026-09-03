@@ -24,7 +24,7 @@ class ShopifyAdminProvider:
             "X-Shopify-Access-Token": self.admin_token,
         }
 
-    def create_paid_order(self, cart_items, currency: str, total_amount: float, transaction_id: str, email: str = "agentic@rasor.test") -> dict:
+    def create_paid_order(self, cart_items, currency: str, total_amount: float, transaction_id: str, email: str = "agentic@rasor.test", payment_id: str = None) -> dict:
         """
         Creates an order in Shopify directly, marking it as paid.
         cart_items should be a list of CartItem objects.
@@ -32,13 +32,6 @@ class ShopifyAdminProvider:
         # Map our cart items to Shopify line items format
         line_items = []
         for item in cart_items:
-            # We need to map our generic cart item back to Shopify's structure
-            # Our product_id is usually formatted as SHPF-12345
-            # But for the Admin API, it's better to provide the variant ID if we have it, 
-            # or just a custom title and price if it's a completely headless/mock order.
-            
-            # Since we are creating a generic order to reflect the external agent payment:
-            # We will use custom line items to guarantee it creates even if variant IDs differ.
             line_items.append({
                 "title": item.title,
                 "price": str(item.unit_price),
@@ -46,11 +39,18 @@ class ShopifyAdminProvider:
                 "vendor": item.merchant
             })
 
+        note_str = f"Razorpay Payment: {payment_id} | Order: {transaction_id}" if payment_id else f"Razorpay Order: {transaction_id}"
+
         payload = {
             "order": {
                 "email": email,
                 "financial_status": "paid",
                 "currency": currency,
+                "note": note_str,
+                "note_attributes": [
+                    {"name": "payment_id", "value": str(payment_id or "")},
+                    {"name": "razorpay_order_id", "value": str(transaction_id or "")}
+                ],
                 "line_items": line_items,
                 "transactions": [
                     {
@@ -58,7 +58,7 @@ class ShopifyAdminProvider:
                         "status": "success",
                         "amount": str(total_amount),
                         "gateway": "razorpay",
-                        "authorization": transaction_id
+                        "authorization": payment_id or transaction_id
                     }
                 ],
                 "tags": "agentic-commerce, rasor-demo"

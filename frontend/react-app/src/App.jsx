@@ -12,6 +12,8 @@ import SettingsPanel from './components/SettingsPanel'
 import FeatureShowcase from './components/FeatureShowcase'
 import HistoryPanel from './components/HistoryPanel'
 import AddToCartModal from './components/AddToCartModal'
+import ProfilePanel from './components/ProfilePanel'
+import OrdersPanel from './components/OrdersPanel'
 import { useApp } from './context/AppContext'
 
 function AppShell() {
@@ -75,10 +77,11 @@ function AppShell() {
           )}
 
           {page === 'chat' && <ChatInterface onAddToCart={handleAddToCart} />}
+          {page === 'profile' && <ProfilePanel />}
           {page === 'history' && <HistoryPanel onNavigate={navigate} onAddToCart={handleAddToCart} />}
           {page === 'features' && <FeatureShowcase />}
           {page === 'settings' && <SettingsPanel />}
-          {page === 'ledger' && <SettingsPanel initialSection="ledger" />}
+          {(page === 'orders' || page === 'ledger') && <OrdersPanel onOpenCart={() => setCartOpen(true)} />}
           {page === 'compare' && <ComparePanel onAddToCart={handleAddToCart} />}
         </main>
       </div>

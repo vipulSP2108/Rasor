@@ -6,7 +6,7 @@ import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -14,6 +14,8 @@ from typing import Optional, List, Dict, Any
 import json
 import re
 import traceback
+import threading
+import time
 
 # ── Import all Rasor modules ──────────────────────────────────────────────────
 from src.config import AgentConfig, ExecutionMode, DataSourceType, UIMode
@@ -38,6 +40,23 @@ except Exception:
 
 # ── App Setup ────────────────────────────────────────────────────────────────
 app = FastAPI(title="Rasor API", version="2.0.0")
+
+# Background thread that reconciles mobile payment links every 6 seconds
+def _background_plink_reconciler():
+    """Continuously checks for paid mobile rescue links and syncs to Shopify."""
+    while True:
+        try:
+            if HAS_CHECKOUT:
+                agent = CheckoutAgent()
+                agent.reconcile_payment_links()
+        except Exception:
+            pass
+        time.sleep(6)
+
+@app.on_event("startup")
+def on_app_startup():
+    t = threading.Thread(target=_background_plink_reconciler, daemon=True)
+    t.start()
 
 app.add_middleware(
     CORSMiddleware,
@@ -102,6 +121,8 @@ class OrderRequest(BaseModel):
     final_total: float
     customer_id: Optional[str] = None
     cart_id: str = "cart_default"
+    mandate_id: Optional[str] = None
+    max_authorized_cap: Optional[float] = None
 
 class S2SRequest(BaseModel):
     cart_items: List[Dict[str, Any]]
@@ -110,6 +131,7 @@ class S2SRequest(BaseModel):
     token_id: str
     customer_id: str
     cart_id: str = "cart_s2s"
+    max_authorized_cap: Optional[float] = None
 
 class VerifyPaymentRequest(BaseModel):
     payment_id: str
@@ -121,6 +143,42 @@ class ShopifySyncRequest(BaseModel):
     final_total: float
     order_id: str
     email: str = "agentic@rasor.test"
+    payment_id: Optional[str] = None
+
+class PaymentLinkRequest(BaseModel):
+    cart_items: List[Dict[str, Any]]
+    currency: str = "INR"
+    final_total: float
+    cart_id: str = "cart_plink"
+    customer_name: str = "Agentic User"
+    customer_phone: str = "8806549952"
+    customer_email: str = "vipulapatil21@gmail.com"
+    notify_sms: bool = True
+    notify_email: bool = True
+    notify_whatsapp: bool = True
+    expiry_minutes: Optional[int] = 15
+    failed_attempts_summary: Optional[str] = None
+    buffer_minutes: Optional[int] = 1
+
+class FailoverLogRequest(BaseModel):
+    cart_id: str
+    order_id: str
+    failed_tier: int
+    failed_instrument: str
+    reason: str
+    next_tier: int
+    next_instrument: str
+
+class CreateIntentMandateRequest(BaseModel):
+    user_email: str = "vipulapatil21@gmail.com"
+    user_phone: str = "+918806549952"
+    max_amount: float
+
+class CreateCartMandateRequest(BaseModel):
+    items: List[Dict[str, Any]]
+    frozen_total: float
+    currency: str = "INR"
+    intent_mandate_id: Optional[str] = None
 
 class OfferRequest(BaseModel):
     cart_items: Dict[str, int]
@@ -593,7 +651,12 @@ def checkout_order(req: OrderRequest):
             cid = req.customer_id
         else:
             cid = None
-        result = agent.create_order(cart, customer_id=cid)
+        result = agent.create_order(
+            cart, 
+            customer_id=cid,
+            mandate_id=req.mandate_id,
+            max_authorized_cap=req.max_authorized_cap
+        )
         return result
     except Exception as e:
         traceback.print_exc()
@@ -611,7 +674,12 @@ def checkout_mandate_order(req: OrderRequest):
         config = AgentConfig()
         customer_id = agent.create_customer(config.customer_email)
         agent.record_mandate_approval(cart.cart_id, req.final_total)
-        result = agent.create_order(cart, customer_id=customer_id)
+        result = agent.create_order(
+            cart, 
+            customer_id=customer_id,
+            mandate_id=req.mandate_id,
+            max_authorized_cap=req.max_authorized_cap
+        )
         result["customer_id"] = customer_id
         return result
     except Exception as e:
@@ -625,8 +693,170 @@ def checkout_s2s(req: S2SRequest):
     try:
         cart = _build_cart(req.cart_items, req.currency, req.final_total, req.cart_id)
         agent = CheckoutAgent()
-        result = agent.capture_saved_token(cart, req.token_id, req.customer_id)
+        result = agent.capture_saved_token(
+            cart, 
+            req.token_id, 
+            req.customer_id,
+            max_authorized_cap=req.max_authorized_cap
+        )
         return result
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/checkout/payment-link")
+def checkout_payment_link(req: PaymentLinkRequest):
+    """Creates a real Razorpay payment link for away-from-desktop rescue."""
+    if not HAS_CHECKOUT:
+        raise HTTPException(status_code=503, detail="CheckoutAgent not available")
+    try:
+        cart = _build_cart(req.cart_items, req.currency, req.final_total, req.cart_id)
+        agent = CheckoutAgent()
+        result = agent.create_payment_link(
+            cart,
+            customer_name=req.customer_name,
+            customer_phone=req.customer_phone,
+            customer_email=req.customer_email,
+            notify_sms=req.notify_sms,
+            notify_email=req.notify_email,
+            notify_whatsapp=req.notify_whatsapp,
+            expiry_minutes=req.expiry_minutes,
+            failed_attempts_summary=req.failed_attempts_summary,
+            buffer_minutes=req.buffer_minutes
+        )
+        return result
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/payment-link/{plink_id}/status")
+def payment_link_status(plink_id: str):
+    """Polls real-time status of payment link."""
+    if not HAS_CHECKOUT:
+        raise HTTPException(status_code=503, detail="CheckoutAgent not available")
+    try:
+        agent = CheckoutAgent()
+        return agent.get_payment_link_status(plink_id)
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/payment-link/{plink_id}/cancel")
+def cancel_payment_link_endpoint(plink_id: str):
+    """Explicitly cancels an active payment link, immediately expiring it."""
+    if not HAS_CHECKOUT:
+        raise HTTPException(status_code=503, detail="CheckoutAgent not available")
+    try:
+        agent = CheckoutAgent()
+        return agent.cancel_payment_link(plink_id)
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/checkout/failover-log")
+def checkout_failover_log(req: FailoverLogRequest):
+    """Logs autonomous rail failovers to the audit ledger."""
+    try:
+        agent = CheckoutAgent()
+        agent.record_tier_failover(
+            cart_id=req.cart_id,
+            order_id=req.order_id,
+            failed_tier=req.failed_tier,
+            instrument=req.failed_instrument,
+            reason=req.reason,
+            next_tier=req.next_tier,
+            next_instrument=req.next_instrument
+        )
+        return {"logged": True}
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ── AP2 Mandate Endpoints ─────────────────────────────────────────────────────
+@app.post("/api/mandate/intent")
+def create_intent_mandate(req: CreateIntentMandateRequest):
+    try:
+        from src.agent.mandate import mandate_engine
+        mandate = mandate_engine.create_intent_mandate(req.user_email, req.max_amount, req.user_phone)
+        return mandate.model_dump()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/mandate/cart")
+def create_cart_mandate(req: CreateCartMandateRequest):
+    try:
+        from src.agent.mandate import mandate_engine
+        cm = mandate_engine.create_cart_mandate(
+            items=req.items,
+            frozen_total=req.frozen_total,
+            intent_mandate_id=req.intent_mandate_id,
+            currency=req.currency
+        )
+        return cm.model_dump()
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ── ACP (Agentic Commerce Protocol) Feed ───────────────────────────────────────
+@app.get("/api/v1/acp/catalog.json")
+@app.get("/.well-known/agentic-commerce.json")
+def get_acp_feed():
+    """ACP Machine-Readable Catalog Feed for external AI buyers."""
+    try:
+        from src.data.shopify_api import ShopifyCatalogProvider
+        from src.data.dev_catalog import DevCatalogProvider
+        
+        prods = []
+        try:
+            s_prov = ShopifyCatalogProvider()
+            prods = s_prov.search_products(query="", limit=30)
+        except Exception:
+            pass
+            
+        if not prods:
+            d_prov = DevCatalogProvider()
+            prods = d_prov.search_products(query="", limit=30)
+
+        acp_items = []
+        for p in prods:
+            acp_items.append({
+                "id": p.id,
+                "title": p.title,
+                "category": str(p.category or "t-shirt"),
+                "brand": p.specs.get("brand") or p.merchant or "Rasor",
+                "price": p.price,
+                "currency": p.currency or "INR",
+                "in_stock": p.in_stock,
+                "variants": [
+                    {"size": s, "variant_gid": gid, "in_stock": True}
+                    for s, gid in (p.specs.get("variant_ids") or {"XL": f"gid://shopify/ProductVariant/{p.id}"}).items()
+                ],
+                "specs": {
+                    "fit": p.specs.get("fit", "Regular Fit"),
+                    "color": p.specs.get("color", "Any"),
+                    "fandom": p.specs.get("fandom", "None"),
+                    "display_image": p.specs.get("display_image") or p.specs.get("image_url")
+                }
+            })
+
+        return {
+            "protocol": "ACP-2026.1",
+            "merchant": {
+                "name": "Rasor Commerce",
+                "system_of_record": "Shopify Headless Storefront",
+                "currency": "INR",
+                "supported_mandates": ["AP2", "UAP"],
+                "endpoints": {
+                    "mandate_intent": "/api/mandate/intent",
+                    "mandate_cart": "/api/mandate/cart",
+                    "checkout_order": "/api/checkout/order",
+                    "payment_link": "/api/checkout/payment-link"
+                }
+            },
+            "item_count": len(acp_items),
+            "items": acp_items
+        }
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -646,6 +876,19 @@ def checkout_verify(req: VerifyPaymentRequest):
 @app.post("/api/shopify/sync")
 def shopify_sync(req: ShopifySyncRequest):
     try:
+        # Zero-trust safeguard: If this is a payment link rescue, verify with Razorpay
+        # that the link is strictly 'paid' and not 'cancelled' or 'expired'.
+        if req.order_id and req.order_id.startswith("plink_"):
+            if HAS_CHECKOUT:
+                agent = CheckoutAgent()
+                plink_status = agent.get_payment_link_status(req.order_id)
+                current_status = plink_status.get("status")
+                if current_status != "paid":
+                    return {
+                        "success": False,
+                        "error": f"Fulfillment rejected: Payment link status is '{current_status}', not 'paid'. Order cannot be created."
+                    }
+
         admin = ShopifyAdminProvider()
         items = [CartItem(
             product_id=i["product_id"],
@@ -654,7 +897,14 @@ def shopify_sync(req: ShopifySyncRequest):
             unit_price=i["unit_price"],
             quantity=i["quantity"]
         ) for i in req.cart_items]
-        result = admin.create_paid_order(items, req.currency, req.final_total, req.order_id, email=req.email)
+        result = admin.create_paid_order(
+            items, 
+            req.currency, 
+            req.final_total, 
+            req.order_id, 
+            email=req.email,
+            payment_id=req.payment_id
+        )
         return result
     except Exception as e:
         traceback.print_exc()
@@ -664,12 +914,65 @@ def shopify_sync(req: ShopifySyncRequest):
 @app.get("/api/shopify/orders")
 def shopify_orders(limit: int = 5):
     try:
+        # Automatically reconcile any mobile links before returning orders list
+        if HAS_CHECKOUT:
+            try:
+                agent = CheckoutAgent()
+                agent.reconcile_payment_links()
+            except Exception:
+                pass
         admin = ShopifyAdminProvider()
         orders = admin.get_recent_orders(limit=limit)
         return {"orders": orders}
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/checkout/reconcile-links")
+def checkout_reconcile_links():
+    """Manual or scheduled trigger to reconcile all payment links immediately."""
+    if not HAS_CHECKOUT:
+        raise HTTPException(status_code=503, detail="CheckoutAgent not available")
+    agent = CheckoutAgent()
+    reconciled = agent.reconcile_payment_links()
+    return {"reconciled": reconciled}
+
+@app.post("/api/webhook/razorpay")
+async def razorpay_webhook(req: Request):
+    """Event-driven webhook from Razorpay for payment_link.paid events."""
+    try:
+        data = await req.json()
+        event = data.get("event")
+        if event in ("payment_link.paid", "payment.captured"):
+            if HAS_CHECKOUT:
+                agent = CheckoutAgent()
+                agent.reconcile_payment_links()
+        return {"status": "ok"}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+@app.get("/api/checkout/refunds")
+def checkout_refunds():
+    """Returns all autonomous refunds executed by the agent."""
+    if not HAS_CHECKOUT:
+        raise HTTPException(status_code=503, detail="CheckoutAgent not available")
+    agent = CheckoutAgent()
+    links = agent._load_payment_links()
+    refunds = []
+    for plink_id, info in links.items():
+        if info.get("refunded"):
+            refunds.append({
+                "plink_id": plink_id,
+                "refund_id": info.get("refund_id"),
+                "amount": info.get("amount"),
+                "currency": info.get("currency", "INR"),
+                "customer_email": info.get("customer_email"),
+                "customer_name": info.get("customer_name"),
+                "reason": "Payment received on cancelled/expired link. Full autonomous refund issued.",
+                "status": "processed",
+                "created_at": info.get("created_at")
+            })
+    return {"refunds": refunds}
 
 # ── Audit Ledger ──────────────────────────────────────────────────────────────
 @app.get("/api/ledger")
