@@ -1,0 +1,197 @@
+{
+  "400001": {
+    "query": "400001",
+    "pincode": "400001",
+    "area": "Haji S Musafarkhana",
+    "city": "Haji S Musafarkhana, Maharashtra",
+    "state": "Maharashtra",
+    "coords": [
+      19.0167,
+      72.85
+    ],
+    "display_label": "Haji S Musafarkhana (400001, Maharashtra)",
+    "source": "zippopotam_open_api"
+  },
+  "110001": {
+    "query": "110001",
+    "pincode": "110001",
+    "area": "Janpath",
+    "city": "Janpath, New Delhi",
+    "state": "New Delhi",
+    "coords": [
+      28.6333,
+      77.2167
+    ],
+    "display_label": "Janpath (110001, New Delhi)",
+    "source": "zippopotam_open_api"
+  },
+  "560001": {
+    "query": "560001",
+    "pincode": "560001",
+    "area": "Rajbhavan",
+    "city": "Rajbhavan, Karnataka",
+    "state": "Karnataka",
+    "coords": [
+      12.2667,
+      76.6833
+    ],
+    "display_label": "Rajbhavan (560001, Karnataka)",
+    "source": "zippopotam_open_api"
+  },
+  "641601": {
+    "query": "641601",
+    "pincode": "641601",
+    "area": "641601",
+    "city": "641601, Tamil Nadu",
+    "state": "Tamil Nadu",
+    "coords": [
+      11.0976629,
+      77.2881138
+    ],
+    "display_label": "641601 (641601)",
+    "source": "osm_nominatim_open_api"
+  },
+  "700001": {
+    "query": "700001",
+    "pincode": "700001",
+    "area": "Lalbazar",
+    "city": "Lalbazar, West Bengal",
+    "state": "West Bengal",
+    "coords": [
+      22.569,
+      88.3697
+    ],
+    "display_label": "Lalbazar (700001, West Bengal)",
+    "source": "zippopotam_open_api"
+  },
+  "425001": {
+    "query": "425001",
+    "pincode": "425001",
+    "area": "Jalgaon Bazar",
+    "city": "Jalgaon Bazar, Maharashtra",
+    "state": "Maharashtra",
+    "coords": [
+      20.9567,
+      75.5533
+    ],
+    "display_label": "Jalgaon Bazar (425001, Maharashtra)",
+    "source": "zippopotam_open_api"
+  },
+  "420001": {
+    "query": "420001",
+    "pincode": "420001",
+    "area": "Mumbai Central",
+    "city": "Mumbai, Maharashtra",
+    "state": "Maharashtra",
+    "coords": [
+      19.076,
+      72.8777
+    ],
+    "display_label": "Mumbai (420001)",
+    "source": "fallback_default"
+  },
+  "424001": {
+    "query": "424001",
+    "pincode": "424001",
+    "area": "424001",
+    "city": "424001, Maharashtra",
+    "state": "Maharashtra",
+    "coords": [
+      20.9113413,
+      74.7615808
+    ],
+    "display_label": "424001 (424001)",
+    "source": "osm_nominatim_open_api"
+  },
+  "mumbai": {
+    "query": "Mumbai",
+    "pincode": "400001",
+    "area": "Mumbai",
+    "city": "Mumbai, 400051",
+    "state": "400051",
+    "coords": [
+      19.054999,
+      72.8692035
+    ],
+    "display_label": "Mumbai (India)",
+    "source": "osm_nominatim_open_api"
+  },
+  "141008": {
+    "query": "141008",
+    "pincode": "141008",
+    "area": "Ikbalganj Ludhiana",
+    "city": "Ikbalganj Ludhiana, Punjab",
+    "state": "Punjab",
+    "coords": [
+      30.9,
+      75.85
+    ],
+    "display_label": "Ikbalganj Ludhiana (141008, Punjab)",
+    "source": "zippopotam_open_api"
+  },
+  "110322": {
+    "query": "110322",
+    "pincode": "110322",
+    "area": "Mumbai Central",
+    "city": "Mumbai, Maharashtra",
+    "state": "Maharashtra",
+    "coords": [
+      19.076,
+      72.8777
+    ],
+    "display_label": "Mumbai (110322)",
+    "source": "fallback_default"
+  },
+  "421302": {
+    "query": "421302",
+    "pincode": "421302",
+    "area": "421302",
+    "city": "421302, Maharashtra",
+    "state": "Maharashtra",
+    "coords": [
+      19.2932707,
+      73.0566305
+    ],
+    "display_label": "421302 (421302)",
+    "source": "osm_nominatim_open_api"
+  },
+  "400042": {
+    "query": "400042",
+    "pincode": "400042",
+    "area": "Kanjur Marg",
+    "city": "Kanjur Marg, Maharashtra",
+    "state": "Maharashtra",
+    "coords": [
+      19.0167,
+      72.85
+    ],
+    "display_label": "Kanjur Marg (400042, Maharashtra)",
+    "source": "zippopotam_open_api"
+  },
+  "jalgoan": {
+    "query": "Jalgoan",
+    "pincode": "400001",
+    "area": "Saraswati Hospital",
+    "city": "Saraswati Hospital, 425001",
+    "state": "425001",
+    "coords": [
+      20.9953933,
+      75.5590329
+    ],
+    "display_label": "Saraswati Hospital (India)",
+    "source": "osm_nominatim_open_api"
+  },
+  "dhule": {
+    "query": "Dhule",
+    "pincode": "400001",
+    "area": "Dhule",
+    "city": "Dhule, Maharashtra",
+    "state": "Maharashtra",
+    "coords": [
+      21.1305215,
+      74.4900614
+    ],
+    "display_label": "Dhule (India)",
+    "source": "osm_nominatim_open_api"
+  }
+}

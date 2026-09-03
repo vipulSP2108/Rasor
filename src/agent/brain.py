@@ -151,6 +151,26 @@ _FANDOM_KNOWLEDGE_GRAPH: dict = {
     "mandalorian": ["star wars", "mando", "baby yoda", "grogu"],
 }
 
+_CHARACTER_ENTITY_MAP: dict = {
+    "black panther": ["black panther", "wakanda", "t'challa", "shuri", "killmonger", "panther"],
+    "iron man": ["iron man", "ironman", "tony stark", "arc reactor", "war machine"],
+    "spider-man": ["spider-man", "spiderman", "peter parker", "miles morales"],
+    "venom": ["venom", "symbiote", "carnage", "eddie brock"],
+    "moon knight": ["moon knight", "marc spector"],
+    "batman": ["batman", "dark knight", "bruce wayne", "gotham"],
+    "deadpool": ["deadpool", "wade wilson"],
+    "captain america": ["captain america", "steve rogers"],
+    "thor": ["thor", "mjolnir", "odinson"],
+    "hulk": ["hulk", "bruce banner"],
+    "wolverine": ["wolverine", "logan"],
+    "joker": ["joker"],
+    "superman": ["superman", "clark kent"],
+    "naruto": ["naruto", "sasuke", "kakashi", "hokage"],
+    "dragon ball": ["goku", "vegeta", "dbz", "dragon ball"],
+    "one piece": ["luffy", "zoro", "one piece"],
+    "jujutsu kaisen": ["gojo", "sukuna", "itadori", "jjk"],
+}
+
 _VIBE_MAP: dict = {
     "retro grunge": "oversized fit washed graphic print maroon grey black",
     "grunge": "oversized fit washed graphic print maroon grey black",
@@ -192,6 +212,127 @@ def preprocess_prompt(prompt: str, enable_semantic: bool = True) -> str:
     
     return text
 
+def calculate_dynamic_composite_match(
+    user_prompt: str,
+    canonical: Optional["CanonicalShoppingQuery"],
+    product: Product,
+    raw_text_score: float,
+    vqa_data: Optional[dict],
+    target_char_key: Optional[str],
+    target_char_terms: List[str]
+) -> Tuple[float, bool, str]:
+    """Calculates a dynamically-weighted composite match score based on:
+    1. Explicit query constraint satisfaction (genre/category, color, gender, placement).
+    2. Character/entity match vs conflicting character penalty.
+    3. Dynamic VQA headroom allocation (scales visual accuracy against available score headroom).
+    4. Dynamic Bayesian popularity/rating headroom allocation.
+    """
+    import math
+    prompt_lower = user_prompt.lower()
+    p_title = product.title.lower()
+    p_specs = product.specs or {}
+    p_text = f"{product.title} {p_specs.get('fandom_partner', '')} {p_specs.get('design', '')} {p_specs.get('color', '')}".lower()
+
+    # 1. Character Match vs Conflicting Character
+    is_char_match = False
+    is_conflicting_char = False
+    if target_char_key:
+        if target_char_terms and any(t in p_text for t in target_char_terms):
+            is_char_match = True
+        else:
+            for other_key, other_terms in _CHARACTER_ENTITY_MAP.items():
+                if other_key != target_char_key and any(ot in p_text for ot in other_terms):
+                    is_conflicting_char = True
+                    break
+
+    # If product features a conflicting character, hard cap at <= 0.38
+    if is_conflicting_char:
+        return 0.38, False, f"Different character ({p_title[:30]}) from requested {target_char_key.title()}"
+
+    # Strip character names before detecting standalone colors/attributes (e.g. 'black panther' shouldn't imply black t-shirt)
+    prompt_for_attrs = re.sub(r"\b(black\s+panther|iron\s+man|spider-man|spiderman|captain\s+america)\b", "", prompt_lower)
+
+    cat_in_prompt = bool(re.search(r"\b(t-shirt|tshirt|tee|shirt|hoodie|joggers|jeans|pants|vest|polo|top|shorts)\b", prompt_for_attrs))
+    color_in_prompt = None
+    for c in ["black", "white", "blue", "red", "green", "grey", "gray", "yellow", "maroon", "beige", "brown", "navy", "orange", "pink", "purple"]:
+        if re.search(rf"\b{c}\b", prompt_for_attrs):
+            color_in_prompt = c
+            break
+    gender_in_prompt = bool(re.search(r"\b(men|man|women|woman|boy|girl|guy|lady|male|female|friend|boyfriend|husband|brother|father|son)\b", prompt_for_attrs))
+    placement_in_prompt = bool(re.search(r"\b(front|back|chest|printed|graphic|print|embroidery)\b", prompt_for_attrs))
+
+    base_score = 0.15
+
+    if is_char_match:
+        base_score += 0.35
+    elif target_char_key is None:
+        base_score += 0.25
+
+    # Category / Genre satisfaction
+    if cat_in_prompt:
+        # User explicitly asked for t-shirt/shirt/etc.
+        if any(cat in p_title or cat in str(p_specs.get("subclass", "")).lower() for cat in ["t-shirt", "tee", "shirt", "tshirt", "hoodie", "polo"]):
+            base_score += 0.14
+    else:
+        # Vague query: user did NOT specify genre/category in prompt
+        base_score += 0.02
+
+    # Color satisfaction
+    if color_in_prompt:
+        if color_in_prompt in p_title or color_in_prompt in str(p_specs.get("color", "")).lower():
+            base_score += 0.08
+    else:
+        base_score += 0.00
+
+    # Gender / Recipient satisfaction
+    if gender_in_prompt:
+        base_score += 0.04
+
+    # Placement / Print satisfaction
+    if placement_in_prompt and ("graphic" in p_title or "print" in p_title):
+        base_score += 0.04
+
+    base_score = min(0.75, max(0.35, base_score))
+
+    # 3. Dynamic Headroom Allocation
+    headroom = max(0.05, 1.0 - base_score)
+
+    vqa_bonus = 0.0
+    vqa_reason = ""
+    is_relevant = True
+
+    if vqa_data:
+        is_vis = bool(vqa_data.get("is_visual_match", False))
+        vis_score = float(vqa_data.get("visual_score", 0.0))
+        vqa_reason = vqa_data.get("reason", "")
+
+        if is_vis or vis_score >= 0.5:
+            # Confirmed visual match: receives dynamic share of headroom
+            vqa_bonus = headroom * 0.35 * max(vis_score, 0.70)
+            is_relevant = True
+        elif is_char_match:
+            # Matches character but specific pose/shield differed: modest partial boost
+            vqa_bonus = headroom * 0.10 * max(vis_score, 0.20)
+            is_relevant = True
+        else:
+            is_relevant = is_vis
+    elif is_char_match:
+        vqa_bonus = headroom * 0.05
+        is_relevant = True
+
+    # Bayesian rating/popularity contribution (up to 25% of headroom)
+    rating = float(product.rating or 4.0)
+    reviews = int(product.review_count or 100)
+    b_raw = rating * math.log10(reviews + 1)
+    b_norm = min(1.0, max(0.1, b_raw / 16.5))
+    bayesian_bonus = headroom * 0.25 * b_norm
+
+    final_score = base_score + vqa_bonus + bayesian_bonus
+    final_score = round(min(0.95, max(0.40 if is_relevant else 0.20, final_score)), 2)
+
+    reason = vqa_reason or f"Constraint match ({int(base_score*100)}%) + Bayesian ({int(b_norm*100)}%)"
+    return final_score, is_relevant, reason
+
 # ---------------------------------------------------------------------------
 # 2. Agent Brain
 # ---------------------------------------------------------------------------
@@ -217,24 +358,29 @@ class AgentBrain:
     def _call_gemini(self, prompt: str, system: str) -> Optional[str]:
         if not self.gemini_key:
             return None
-        try:
-            url = (
-                f"https://generativelanguage.googleapis.com/v1beta/models/"
-                f"{self.primary_model}:generateContent?key={self.gemini_key}"
-            )
-            payload = {
-                "contents": [{"parts": [{"text": prompt}]}],
-                "systemInstruction": {"parts": [{"text": system}]},
-                "generationConfig": {"responseMimeType": "application/json", "temperature": 0.1},
-            }
-            resp = requests.post(url, json=payload, timeout=8)
-            if resp.status_code == 200:
-                text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-                self.last_model_used = f"Google {self.primary_model}"
-                return text
-            print(f"[Brain/Gemini] HTTP {resp.status_code}: {resp.text[:150]}")
-        except Exception as e:
-            print(f"[Brain/Gemini] Error: {e}")
+        candidate_models = [self.primary_model, "gemini-3.1-flash-lite", "gemini-3.5-flash-lite"]
+        seen = set()
+        for m in candidate_models:
+            if not m or m in seen:
+                continue
+            seen.add(m)
+            try:
+                url = (
+                    f"https://generativelanguage.googleapis.com/v1beta/models/"
+                    f"{m}:generateContent?key={self.gemini_key}"
+                )
+                payload = {
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "systemInstruction": {"parts": [{"text": system}]},
+                    "generationConfig": {"responseMimeType": "application/json", "temperature": 0.1},
+                }
+                resp = requests.post(url, json=payload, timeout=8)
+                if resp.status_code == 200:
+                    text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+                    self.last_model_used = f"Google {m}"
+                    return text
+            except Exception:
+                continue
         return None
 
     def _call_gemini_vision(self, prompt: str, image_url: str) -> Optional[str]:
@@ -242,29 +388,28 @@ class AgentBrain:
         if not self.gemini_key:
             return None
         try:
-            # 1. Download image
+            # 1. Download image with strict timeout
             import base64
             headers = {
                 "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
             }
-            img_resp = requests.get(image_url, headers=headers, timeout=5)
+            img_resp = requests.get(image_url, headers=headers, timeout=3)
             if img_resp.status_code != 200:
-                print(f"[Brain/GeminiVision] Failed to download image {image_url} (HTTP {img_resp.status_code})")
                 return None
             img_b64 = base64.b64encode(img_resp.content).decode("utf-8")
             
-            # Determine mime type naively
             mime_type = "image/jpeg"
             if image_url.lower().endswith(".png"):
                 mime_type = "image/png"
             elif image_url.lower().endswith(".webp"):
                 mime_type = "image/webp"
 
-            # 2. Call Gemini
+            # 2. Call Gemini with ultra-fast vision model
+            model_to_use = "gemini-3.1-flash-lite"
             url = (
                 f"https://generativelanguage.googleapis.com/v1beta/models/"
-                f"gemini-1.5-flash:generateContent?key={self.gemini_key}"
+                f"{model_to_use}:generateContent?key={self.gemini_key}"
             )
             payload = {
                 "contents": [
@@ -282,14 +427,13 @@ class AgentBrain:
                 ],
                 "generationConfig": {"temperature": 0.1},
             }
-            resp = requests.post(url, json=payload, timeout=12)
+            resp = requests.post(url, json=payload, timeout=6)
             if resp.status_code == 200:
                 text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-                self.last_model_used = "Google gemini-1.5-flash (Vision)"
+                self.last_model_used = f"Google {model_to_use} (Vision)"
                 return text
-            print(f"[Brain/GeminiVision] HTTP {resp.status_code}: {resp.text[:150]}")
-        except Exception as e:
-            print(f"[Brain/GeminiVision] Error: {e}")
+        except Exception:
+            pass
         return None
 
     def _call_groq(self, prompt: str, system: str) -> Optional[str]:
@@ -402,6 +546,7 @@ class AgentBrain:
             "- 'oversized', 'baggy', 'loose' → fit: 'Oversized Fit'\n"
             "- 'batman', 'joker', 'superman', 'dc' → fandom: 'DC'\n"
             "- 'spider man', 'iron man', 'marvel', 'deadpool', 'thor', 'avengers' → fandom: 'Marvel'\n"
+            "- specific_visual_intent: ONLY set this if user explicitly asks for artwork, graphics, characters, poses, printed text, or back prints (e.g. 'iron man standing', 'anime girl print', 'quote on back'). For plain/common garments without requested artwork (e.g. 'black oversized t-shirt', 'white gym tee', 'plain polo'), specific_visual_intent MUST be null.\n"
             "- Output ONLY valid JSON."
         )
 
@@ -428,6 +573,16 @@ class AgentBrain:
                     data["occasion"] = data.get("occasion", "Any") if data.get("occasion") in [e.value for e in OccasionEnum] else "Any"
                     data["fandom"] = data.get("fandom", "None") if data.get("fandom") in [e.value for e in FandomEnum] else "None"
                     data["fast_shipping_requested"] = data.get("fast_shipping_requested", False)
+                    # Discard pseudo-visual intents that merely repeat category/color/fit
+                    v_intent = str(data.get("specific_visual_intent") or "").lower().strip()
+                    common_plain_patterns = [
+                        "black oversized t-shirt", "black t-shirt", "oversized t-shirt", "oversized tee",
+                        "plain t-shirt", "solid t-shirt", "t-shirt", "shirt", "hoodie", "joggers", "jeans",
+                        "black shirt", "white t-shirt", "solid black", "plain black", "plain white"
+                    ]
+                    if v_intent in common_plain_patterns or v_intent in ["none", "null", "n/a", "not specified", "false", ""]:
+                        data["specific_visual_intent"] = None
+
                     parsed_items.append(CanonicalShoppingQuery(**data))
                 except Exception as e:
                     print(f"[Brain] Item Schema validation error: {e}")
@@ -509,7 +664,8 @@ class AgentBrain:
         canonical: Optional["CanonicalShoppingQuery"] = None,
         vqa_strict_filter: bool = False,
         enable_vqa_scanner: bool = True,
-        truth_hierarchy: bool = True
+        truth_hierarchy: bool = True,
+        vqa_limit: int = 8
     ) -> Tuple[List[Product], List[ProductRelevanceEvaluation]]:
         """LLM QA: Verifies retrieved products against user intent. Rejects false positives.
 
@@ -544,10 +700,26 @@ class AgentBrain:
         if pos_signals:
             constraint_lines.append(f"POSITIVE REQUIREMENTS (must be present for a high match_score): {', '.join(pos_signals)}")
 
-        if canonical and canonical.has_visual_intent:
+        # Character / Entity detection from prompt
+        target_char_key = None
+        target_char_terms = []
+        user_prompt_lower = user_prompt.lower()
+        for char_key, char_terms in _CHARACTER_ENTITY_MAP.items():
+            if any(re.search(rf"\b{re.escape(term)}\b", user_prompt_lower) for term in char_terms):
+                target_char_key = char_key
+                target_char_terms = char_terms
+                break
+
+        if target_char_key:
+            constraint_lines.append(
+                f"PRIMARY CHARACTER/ENTITY REQUIREMENT: '{target_char_key.title()}'.\n"
+                f"  - Products featuring '{target_char_key.title()}' (or related lore: {', '.join(target_char_terms)}) MUST score at least 0.65–0.78, and higher (0.75–0.90) if they match specific visual/design details.\n"
+                f"  - Products featuring a DIFFERENT character (e.g. Iron Man, Moon Knight, Venom when user asked for Black Panther) are WRONG characters: score them <= 0.45 and set is_relevant=false."
+            )
+        elif canonical and canonical.has_visual_intent:
             constraint_lines.append(
                 "WARNING: A specific visual intent was provided. DO NOT reject products (score < 0.5) just because their text doesn't describe the exact visual details. "
-                "If the product matches the broader category/fandom, score it >= 0.5 so it survives to be visually scanned."
+                "If the product matches the broader category, score it >= 0.5 so it survives to be visually scanned."
             )
 
         constraint_block = "\n".join(constraint_lines) if constraint_lines else "No hard constraints beyond the user's prompt."
@@ -618,12 +790,19 @@ class AgentBrain:
                     eval_map = {e["product_id"]: e for e in data.get("evaluations", [])}
 
                     # ---------------------------------------------------------
-                    # VQA Scanning Phase (if visual intent is provided)
+                    # VQA Scanning Phase:
+                    # - If enable_vqa_scanner is True: Run VQA on every query.
+                    # - If enable_vqa_scanner is False: Smart mode: ONLY run when visual intent is asked.
+                    # - For plain common items with toggle OFF, VQA is skipped.
                     # ---------------------------------------------------------
-                    if enable_vqa_scanner and canonical and canonical.has_visual_intent:
-                        print(f"[Brain] Executing Exhaustive VQA Scanning for: {canonical.specific_visual_intent}")
+                    has_explicit_visual_intent = bool(canonical and canonical.has_visual_intent)
+                    should_run_vqa = bool(enable_vqa_scanner) or has_explicit_visual_intent
+
+                    if should_run_vqa:
+                        target_visual = (canonical.specific_visual_intent if has_explicit_visual_intent else None) or user_prompt
+                        print(f"[Brain] Executing VQA Scanning for: '{target_visual}' (always_run={enable_vqa_scanner}, visual_intent={has_explicit_visual_intent})")
                         vqa_prompt = (
-                            f"The user has a highly specific visual requirement for this clothing item: '{canonical.specific_visual_intent}'.\n"
+                            f"The user has a visual requirement for this clothing item: '{target_visual}'.\n"
                             "Look closely at the design, graphic, and features of the product in the image.\n"
                             "Respond with ONLY a JSON object in this format:\n"
                             '{"is_visual_match": true|false, "visual_score": 0.0-1.0, "reason": "short explanation"}'
@@ -645,55 +824,59 @@ class AgentBrain:
                                 if float(ev_data.get("match_score", 0.0)) >= 0.4:
                                     vqa_candidates.append(p)
                         
-                        if not vqa_strict_filter:
-                            # Sort by text score to scan the most likely candidates first
-                            vqa_candidates.sort(key=lambda x: float(eval_map.get(x.id, {}).get("match_score", 0.0)), reverse=True)
+                        def vqa_priority_key(p):
+                            ev = eval_map.get(p.id, {})
+                            score = float(ev.get("match_score", 0.0))
+                            p_text = f"{p.title} {p.specs.get('fandom_partner', '')} {p.specs.get('design', '')}".lower()
+                            char_bonus = 2.0 if (target_char_terms and any(t in p_text for t in target_char_terms)) else 0.0
+                            return (char_bonus, score)
+
+                        vqa_candidates.sort(key=vqa_priority_key, reverse=True)
+                        vqa_candidates = vqa_candidates[:vqa_limit]
                         
-                        # Cap at 15 to avoid massive API delays
-                        vqa_candidates = vqa_candidates[:15]
-                        
-                        for p in vqa_candidates:
+                        vqa_results = {}
+                        import concurrent.futures
+                        def run_single_vqa(p):
                             img_url = p.specs.get("image_url") or p.specs.get("display_image")
-                            if img_url:
-                                vqa_raw = self._call_gemini_vision(vqa_prompt, img_url)
-                                vqa_data = self._extract_json(vqa_raw)
-                                if vqa_data:
-                                    ev_data = eval_map[p.id]
-                                    
-                                    # VQA trumps text relevance
-                                    is_vis = bool(vqa_data.get("is_visual_match", False))
-                                    ev_data["is_relevant"] = is_vis
-                                    
-                                    # Blend scores, favoring vision heavily (70/30)
-                                    text_score = float(ev_data.get("match_score", 0.5))
-                                    vis_score = float(vqa_data.get("visual_score", 0.0))
-                                    ev_data["match_score"] = (text_score * 0.3) + (vis_score * 0.7)
-                                    
-                                    vqa_reason = vqa_data.get("reason", "")
-                                    ev_data["reason"] = f"[VQA: {is_vis}] {vqa_reason}"
+                            if not img_url:
+                                return
+                            vqa_raw = self._call_gemini_vision(vqa_prompt, img_url)
+                            if not vqa_raw:
+                                return
+                            vqa_data = self._extract_json(vqa_raw)
+                            if vqa_data:
+                                vqa_results[p.id] = vqa_data
+
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+                            list(executor.map(run_single_vqa, vqa_candidates))
+                    else:
+                        vqa_results = {}
+                        print("[Brain] VQA Vision Scanner skipped (plain/common item with no visual intent, always_run=False)")
                     
                     for p in candidates:
                         ev_data = eval_map.get(p.id)
-                        if ev_data:
-                            ev = ProductRelevanceEvaluation(
-                                product_id=p.id,
-                                product_title=p.title,
-                                is_relevant=bool(ev_data.get("is_relevant", True)),
-                                match_score=float(ev_data.get("match_score", 0.7)),
-                                reason=str(ev_data.get("reason", "Passed LLM evaluation")),
-                            )
-                            evaluations.append(ev)
-                            if ev.is_relevant and ev.match_score >= 0.5:
-                                accepted.append(p)
-                        else:
-                            # Product not evaluated by LLM — assign neutral score, keep it
-                            evaluations.append(ProductRelevanceEvaluation(
-                                product_id=p.id,
-                                product_title=p.title,
-                                is_relevant=True,
-                                match_score=0.6,
-                                reason="Not evaluated — kept as neutral candidate",
-                            ))
+                        raw_score = float(ev_data.get("match_score", 0.5)) if ev_data else 0.5
+                        vqa_item_data = vqa_results.get(p.id)
+
+                        final_score, is_relevant, reason = calculate_dynamic_composite_match(
+                            user_prompt=user_prompt,
+                            canonical=canonical,
+                            product=p,
+                            raw_text_score=raw_score,
+                            vqa_data=vqa_item_data,
+                            target_char_key=target_char_key,
+                            target_char_terms=target_char_terms
+                        )
+
+                        ev = ProductRelevanceEvaluation(
+                            product_id=p.id,
+                            product_title=p.title,
+                            is_relevant=is_relevant,
+                            match_score=final_score,
+                            reason=reason,
+                        )
+                        evaluations.append(ev)
+                        if is_relevant and final_score >= 0.45:
                             accepted.append(p)
                     
                     # Sort accepted by match score
@@ -712,9 +895,10 @@ class AgentBrain:
                 reason="LLM unavailable — passed attribute pre-filters",
             ))
         return candidates, evaluations
+
     def compare_products(self, products: List[Product]) -> Optional['ProductComparison']:
         """Stage 4: LLM-powered detailed comparison matrix for selected items."""
-        from src.agent.state import ProductComparison
+        from src.agent.state import ProductComparison, FeatureComparisonRow, ProductProsCons
         if not products:
             return None
         
@@ -722,39 +906,138 @@ class AgentBrain:
         for i, p in enumerate(products):
             prod_summaries.append({
                 "item_index": i + 1,
+                "id": p.id,
                 "title": p.title,
-                "price": p.price,
-                "rating": f"{p.rating} ({p.review_count} reviews)",
-                "materials": p.specs.get("fabric", "Unknown"),
-                "shipping": f"{getattr(p, 'shipping_days', 'Unknown')} days",
-                "description": (p.rich_description or "")[:400]
+                "price": f"₹{p.price:,.0f}" if p.price else "N/A",
+                "rating": f"{p.rating} ({p.review_count} reviews)" if p.rating else "N/A",
+                "materials": p.specs.get("fabric") or p.specs.get("material", "100% Premium Cotton"),
+                "fit": p.specs.get("fit", "Regular Fit"),
+                "color": p.specs.get("color", "Multi"),
+                "shipping": f"{getattr(p, 'shipping_days', 3)} days",
+                "description": (p.rich_description or "")[:350]
             })
             
         system = (
-            "You are an expert personal stylist and e-commerce assistant.\n"
-            "The user has selected multiple items to compare.\n"
-            "Your task is to provide a highly structured, objective, and stylistic comparison.\n"
-            "Output ONLY valid JSON matching this structure exactly:\n"
+            "You are an expert fashion stylist and merchandise comparison analyst.\n"
+            "The user has selected multiple apparel items to compare side-by-side.\n"
+            "Your task is to provide an objective, data-rich comparison across ALL provided products.\n"
+            "CRITICAL: You MUST include EVERY product in the feature_matrix and pros_and_cons using its EXACT title.\n"
+            "Output ONLY valid JSON matching this schema:\n"
             "{\n"
-            '  "quick_summary": "2 sentences summarizing the trade-offs",\n'
+            '  "quick_summary": "2 sentences summarizing key trade-offs, value proposition, and style highlights across all items",\n'
             '  "feature_matrix": [\n'
-            '      {"feature_name": "Price", "product_values": {"Exact Product Title A": "$50", "Exact Product Title B": "$60"}}\n'
+            '      {"feature_name": "Price", "product_values": {"Exact Title 1": "₹999", "Exact Title 2": "₹1,199"}},\n'
+            '      {"feature_name": "Fit Style", "product_values": {"Exact Title 1": "Oversized Fit", "Exact Title 2": "Regular Fit"}},\n'
+            '      {"feature_name": "Material / Fabric", "product_values": {"Exact Title 1": "100% Cotton", "Exact Title 2": "Poly-Cotton"}},\n'
+            '      {"feature_name": "Rating & Reviews", "product_values": {"Exact Title 1": "4.6 (120 reviews)", "Exact Title 2": "4.4 (85 reviews)"}}\n'
             '  ],\n'
             '  "pros_and_cons": [\n'
-            '      {"product_title": "Exact Product Title A", "pros": ["...", "..."], "cons": ["...", "..."]}\n'
+            '      {"product_title": "Exact Title 1", "pros": ["Distinct graphic art", "Soft breathable cotton"], "cons": ["Slightly heavier GSM"]},\n'
+            '      {"product_title": "Exact Title 2", "pros": ["Everyday versatile fit", "Budget-friendly price"], "cons": ["Standard print silhouette"]}\n'
             '  ],\n'
-            '  "stylist_recommendation": {"Best for Value": "Product A because...", "Best for Premium Quality": "Product B because..."}\n'
+            '  "stylist_recommendation": {\n'
+            '      "Best for Value": "Product X because...",\n'
+            '      "Best for Premium Quality": "Product Y because..."\n'
+            '  }\n'
             "}"
         )
         msg = f"Compare these items:\n{json.dumps(prod_summaries, indent=2)}"
         
+        parsed = None
         raw = self._call_llm(msg, system)
         if raw:
             parsed = self._extract_json(raw)
-            if parsed:
-                try:
-                    return ProductComparison(**parsed)
-                except Exception as e:
-                    print(f"[Brain] Error parsing ProductComparison: {e}")
-        return None
+
+        # Baseline deterministic matrix
+        base_price_map = {p.title: f"₹{p.price:,.0f}" if p.price else "₹999" for p in products}
+        base_rating_map = {p.title: f"{p.rating or 4.5} ({p.review_count or 100}+ reviews)" for p in products}
+        base_fit_map = {p.title: p.specs.get("fit", "Regular Fit") for p in products}
+        base_fabric_map = {p.title: p.specs.get("fabric") or p.specs.get("material", "100% Combed Cotton") for p in products}
+        base_shipping_map = {p.title: f"{getattr(p, 'shipping_days', 3)} days" for p in products}
+        base_color_map = {p.title: p.specs.get("color", "Multi") for p in products}
+
+        default_rows = [
+            FeatureComparisonRow(feature_name="Price", product_values=base_price_map),
+            FeatureComparisonRow(feature_name="Rating & Reviews", product_values=base_rating_map),
+            FeatureComparisonRow(feature_name="Fit Style", product_values=base_fit_map),
+            FeatureComparisonRow(feature_name="Material / Fabric", product_values=base_fabric_map),
+            FeatureComparisonRow(feature_name="Color Variant", product_values=base_color_map),
+            FeatureComparisonRow(feature_name="Estimated Delivery", product_values=base_shipping_map),
+        ]
+
+        if parsed and isinstance(parsed, dict):
+            try:
+                feature_matrix = []
+                for row_data in parsed.get("feature_matrix", []):
+                    f_name = row_data.get("feature_name", "Feature")
+                    p_vals = row_data.get("product_values", {})
+                    for p in products:
+                        if p.title not in p_vals:
+                            matched_val = None
+                            for k, v in p_vals.items():
+                                if k.lower() in p.title.lower() or p.title.lower() in k.lower():
+                                    matched_val = v
+                                    break
+                            p_vals[p.title] = matched_val or (
+                                base_price_map[p.title] if "price" in f_name.lower()
+                                else base_rating_map[p.title] if "rating" in f_name.lower()
+                                else base_fit_map[p.title] if "fit" in f_name.lower()
+                                else base_fabric_map[p.title] if "material" in f_name.lower() or "fabric" in f_name.lower()
+                                else "Standard"
+                            )
+                    feature_matrix.append(FeatureComparisonRow(feature_name=f_name, product_values=p_vals))
+                
+                existing_feature_names = {r.feature_name.lower() for r in feature_matrix}
+                for def_row in default_rows:
+                    if not any(def_row.feature_name.lower() in name for name in existing_feature_names):
+                        feature_matrix.append(def_row)
+
+                pros_cons_list = []
+                parsed_pc = parsed.get("pros_and_cons", [])
+                for p in products:
+                    found_pc = next((x for x in parsed_pc if x.get("product_title") == p.title or x.get("product_title", "").lower() in p.title.lower() or p.title.lower() in x.get("product_title", "").lower()), None)
+                    if found_pc:
+                        pros_cons_list.append(ProductProsCons(
+                            product_title=p.title,
+                            pros=found_pc.get("pros", ["Great comfort and design"]),
+                            cons=found_pc.get("cons", ["Standard care instructions"])
+                        ))
+                    else:
+                        pros_cons_list.append(ProductProsCons(
+                            product_title=p.title,
+                            pros=[f"Premium {p.specs.get('fit', 'style')} silhouette", "High quality fabric"],
+                            cons=["Popular item with limited seasonal stock"]
+                        ))
+
+                quick_summary = parsed.get("quick_summary") or f"Compared {len(products)} curated fashion pieces. Each offers distinct fit, design, and price points suited for different styling needs."
+                recommendations = parsed.get("stylist_recommendation") or {
+                    "Best Overall Value": f"{products[0].title} offers the best balance of price and customer satisfaction.",
+                    "Top Style Pick": f"{products[-1].title} stands out for its unique design."
+                }
+
+                return ProductComparison(
+                    quick_summary=quick_summary,
+                    feature_matrix=feature_matrix,
+                    pros_and_cons=pros_cons_list,
+                    stylist_recommendation=recommendations
+                )
+            except Exception as e:
+                print(f"[Brain] Error merging ProductComparison: {e}")
+
+        # Fallback comparison if LLM call was unavailable
+        return ProductComparison(
+            quick_summary=f"Comparing {len(products)} selected products. Review the specifications, customer ratings, and key attributes below to choose the perfect fit.",
+            feature_matrix=default_rows,
+            pros_and_cons=[
+                ProductProsCons(
+                    product_title=p.title,
+                    pros=[f"Well-reviewed {p.specs.get('fit', 'Regular')} cut", "Comfortable all-day wear"],
+                    cons=["Subject to seasonal variant availability"]
+                ) for p in products
+            ],
+            stylist_recommendation={
+                "Best Value": f"{min(products, key=lambda x: x.price).title} offers the lowest entry price.",
+                "Highest Rated": f"{max(products, key=lambda x: x.rating or 0).title} holds the highest customer satisfaction score."
+            }
+        )
 
