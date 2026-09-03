@@ -1,6 +1,6 @@
 import axios from 'axios'
 
-const api = axios.create({ baseURL: '' })
+const api = axios.create({ baseURL: 'http://127.0.0.1:8000' })
 
 export const searchProducts = (data) => api.post('/api/search', data)
 export const chatMessage = (data) => api.post('/api/chat', data)
@@ -19,3 +19,11 @@ export const clearLedger = () => api.delete('/api/ledger')
 export const getRazorpayKey = () => api.get('/api/razorpay-key')
 export const estimateLogistics = (data) => api.post('/api/logistics/estimate', data)
 export const getProductsByIds = (data) => api.post('/api/products/by-ids', data)
+export const createPaymentLink = (data) => api.post('/api/checkout/payment-link', data)
+export const getPaymentLinkStatus = (plinkId) => api.get(`/api/payment-link/${plinkId}/status`)
+export const cancelPaymentLink = (plinkId) => api.post(`/api/payment-link/${plinkId}/cancel`)
+export const logFailover = (data) => api.post('/api/checkout/failover-log', data)
+export const createIntentMandate = (data) => api.post('/api/mandate/intent', data)
+export const createCartMandate = (data) => api.post('/api/mandate/cart', data)
+export const getAcpFeed = () => api.get('/api/v1/acp/catalog.json')
+export const getRefunds = () => api.get('/api/checkout/refunds')

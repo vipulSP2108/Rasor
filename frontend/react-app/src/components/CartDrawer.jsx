@@ -1,13 +1,26 @@
-import React from 'react';
-import { useState, useEffect } from 'react'
-import { X, Minus, Plus, Trash2, ShoppingBag, ExternalLink } from 'lucide-react'
+import React, { useState } from 'react';
+import { X, Minus, Plus, Trash2, ShoppingBag, ExternalLink, Sparkles, ShieldCheck, RefreshCw } from 'lucide-react'
 import { useApp } from '../context/AppContext'
+import { useVoice } from '../hooks/useVoice'
 import CheckoutSection from './CheckoutSection'
 import toast from 'react-hot-toast'
 
 export default function CartDrawer({ onClose }) {
-  const { cart, removeFromCart, updateQty, clearCart, config, updateConfig } = useApp()
+  const { 
+    cart, removeFromCart, updateQty, clearCart, 
+    config, updateConfig, candidateBuffer = [], 
+    addToCartLocal, userProfile 
+  } = useApp()
+  const { speak } = useVoice()
   const curr = '₹'
+
+  const handleSubstituteItem = (oldItem, newItem) => {
+    if (!oldItem || !newItem) return
+    removeFromCart(oldItem.id)
+    addToCartLocal(newItem, 1)
+    speak(`Item out of stock. Swapped with runner-up from local buffer with zero network latency.`)
+    toast.success(`Substituted "${oldItem.title.slice(0, 15)}..." with "${newItem.title.slice(0, 15)}..." from buffer!`, { icon: '🔄' })
+  }
 
   const cartProducts = Object.entries(cart.items).map(([id, qty]) => ({
     ...cart.products[id],
@@ -131,6 +144,63 @@ export default function CartDrawer({ onClose }) {
                 <ShoppingBag size={16} /> Open in Shopify Storefront
                 <ExternalLink size={13} />
               </a>
+            </div>
+          )}
+
+          {/* AP2 Trust Shield */}
+          <div style={{
+            background: 'rgba(16, 185, 129, 0.08)',
+            border: '1px solid rgba(16, 185, 129, 0.25)',
+            borderRadius: 6, padding: '8px 10px',
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            marginBottom: 12, fontSize: '0.74rem'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#6ee7b7' }}>
+              <ShieldCheck size={16} />
+              <span><strong>AP2 Bounded Mandate</strong> (Cap: {curr}{config.maxCostHitl || 2000})</span>
+            </div>
+            <span style={{ fontFamily: 'monospace', color: 'var(--text-muted)', fontSize: '0.7rem' }}>
+              #sha256-verified
+            </span>
+          </div>
+
+          {/* OOS Pre-Fetched Buffer Candidate Card */}
+          {candidateBuffer.length > 0 && cartProducts.length > 0 && (
+            <div style={{
+              background: 'rgba(99, 102, 241, 0.08)',
+              border: '1px solid rgba(99, 102, 241, 0.25)',
+              borderRadius: 8, padding: '10px 12px', marginBottom: 14
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                <span style={{ fontSize: '0.74rem', fontWeight: 700, color: '#a5b4fc', display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <Sparkles size={12} /> Pre-Fetched Runner-Up Buffer ({candidateBuffer.length} cached)
+                </span>
+                <span className="badge badge-purple" style={{ fontSize: '0.66rem' }}>Zero-Latency</span>
+              </div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 6 }}>
+                <img
+                  src={candidateBuffer[0]?.specs?.display_image || candidateBuffer[0]?.specs?.image_url || 'https://via.placeholder.com/40'}
+                  alt="Runner-up"
+                  style={{ width: 36, height: 36, borderRadius: 4, objectFit: 'cover' }}
+                />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: '0.74rem', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {candidateBuffer[0]?.title}
+                  </div>
+                  <div style={{ fontSize: '0.7rem', color: '#10b981' }}>
+                    {curr}{candidateBuffer[0]?.price} (Size {userProfile?.defaultSize || 'XL'} Ready)
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-xs"
+                  onClick={() => handleSubstituteItem(cartProducts[0], candidateBuffer[0])}
+                  style={{ fontSize: '0.7rem', padding: '4px 8px', whiteSpace: 'nowrap' }}
+                  title="Simulate Out-Of-Stock on Item #1 and substitute with pre-fetched buffer"
+                >
+                  <RefreshCw size={11} /> Test OOS Swap
+                </button>
+              </div>
             </div>
           )}
 

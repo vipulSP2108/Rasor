@@ -6,14 +6,32 @@ import { useApp } from '../context/AppContext'
 import toast from 'react-hot-toast'
 
 export default function AddToCartModal({ product, onConfirm, onClose, config }) {
-  const { cart } = useApp()
-  const [selectedSize, setSelectedSize] = useState(null)
-  const [qty, setQty] = useState(1)
-  const [loading, setLoading] = useState(false)
-
+  const { cart, userProfile, searchState } = useApp()
   const variantIds = product.specs?.variant_ids || {}
   const sizes = Object.keys(variantIds)
   const curr = config.currency === 'INR' ? '₹' : '$'
+
+  // Compute sticky preferred size:
+  // 1. Explicit search query size (e.g. "XL")
+  // 2. User Profile Default Size (e.g. "XL")
+  // 3. First size available in catalog variants
+  const computeInitialSize = () => {
+    const querySize = searchState?.canonicalQuery?.size
+    if (querySize && querySize !== 'Any') {
+      const match = sizes.find(s => s.trim().toUpperCase() === querySize.trim().toUpperCase())
+      if (match) return match
+    }
+    const profileSize = userProfile?.defaultSize
+    if (profileSize) {
+      const match = sizes.find(s => s.trim().toUpperCase() === profileSize.trim().toUpperCase())
+      if (match) return match
+    }
+    return sizes[0] || 'XL'
+  }
+
+  const [selectedSize, setSelectedSize] = useState(computeInitialSize)
+  const [qty, setQty] = useState(1)
+  const [loading, setLoading] = useState(false)
 
   // Calculate existing cart total from active items
   const currentCartTotal = Object.entries(cart.items || {}).reduce((sum, [id, q]) => {
@@ -32,7 +50,7 @@ export default function AddToCartModal({ product, onConfirm, onClose, config }) 
 
   const handleConfirm = async () => {
     if (!canAdd) return
-    const size = selectedSize || sizes[0]
+    const size = selectedSize || computeInitialSize()
     const variantGid = variantIds[size]
 
     setLoading(true)
@@ -102,7 +120,7 @@ export default function AddToCartModal({ product, onConfirm, onClose, config }) 
               {sizes.map(s => (
                 <button
                   key={s}
-                  className={`radio-option ${(selectedSize || sizes[0]) === s ? 'selected' : ''}`}
+                  className={`radio-option ${selectedSize === s ? 'selected' : ''}`}
                   onClick={() => setSelectedSize(s)}
                 >
                   {s}

@@ -1,7 +1,6 @@
 import React from 'react'
 import { useState, useEffect } from 'react'
-import { RefreshCw, Trash2, Key, ShieldCheck, PlusCircle, CheckCircle2, AlertCircle } from 'lucide-react'
-import { getOrders, getLedger, clearLedger } from '../api/client'
+import { Key, ShieldCheck, PlusCircle, CheckCircle2, AlertCircle } from 'lucide-react'
 import { useApp } from '../context/AppContext'
 import { useVoice } from '../hooks/useVoice'
 import toast from 'react-hot-toast'
@@ -14,10 +13,10 @@ function Toggle({ checked, onChange, label }) {
         <input type="checkbox" checked={!!checked} onChange={e => onChange(e.target.checked)} />
         <div className="toggle-track" />
       </label>
-      <span style={{ 
-        fontSize: '0.72rem', 
-        fontWeight: 700, 
-        padding: '2px 8px', 
+      <span style={{
+        fontSize: '0.72rem',
+        fontWeight: 700,
+        padding: '2px 8px',
         borderRadius: 4,
         letterSpacing: '0.04em',
         background: checked ? 'rgba(16, 185, 129, 0.2)' : 'rgba(255, 255, 255, 0.08)',
@@ -56,8 +55,8 @@ function Section({ icon, title, children }) {
 }
 
 export default function SettingsPanel() {
-  const { 
-    config, 
+  const {
+    config,
     updateConfig,
     razorpayToken,
     razorpayCustomerId,
@@ -66,42 +65,15 @@ export default function SettingsPanel() {
     updateMandateTokenId,
     updateMandateLimit,
     saveMandateToken,
-    clearMandateToken
+    clearMandateToken,
+    userProfile,
+    updateUserProfile
   } = useApp()
-  
+
   const { voices, speak } = useVoice()
   const curr = config.currency === 'INR' ? '₹' : '$'
 
-  const [orders, setOrders] = useState([])
-  const [loadingOrders, setLoadingOrders] = useState(false)
-  const [ledger, setLedger] = useState([])
-  const [loadingLedger, setLoadingLedger] = useState(false)
 
-  const fetchOrders = async () => {
-    setLoadingOrders(true)
-    try {
-      const { data } = await getOrders(5)
-      setOrders(data.orders || [])
-    } catch { toast.error('Failed to fetch orders') }
-    finally { setLoadingOrders(false) }
-  }
-
-  const fetchLedger = async () => {
-    setLoadingLedger(true)
-    try {
-      const { data } = await getLedger()
-      setLedger(data.entries || [])
-    } catch { toast.error('Failed to fetch ledger') }
-    finally { setLoadingLedger(false) }
-  }
-
-  const handleClearLedger = async () => {
-    await clearLedger().catch(() => toast.error('Failed to clear ledger'))
-    setLedger([])
-    toast.success('Ledger cleared')
-  }
-
-  useEffect(() => { fetchOrders(); fetchLedger() }, [])
 
   return (
     <div className="settings-panel animate-fade-in" style={{ maxWidth: 880, margin: '0 auto' }}>
@@ -123,7 +95,7 @@ export default function SettingsPanel() {
               </div>
             </div>
             <div className="flex gap-2">
-              <button 
+              <button
                 className="btn btn-secondary btn-xs"
                 onClick={() => {
                   const testTok = `tok_test_${Math.random().toString(36).slice(2, 9)}`
@@ -136,7 +108,7 @@ export default function SettingsPanel() {
                 + Generate Test Token (₹800)
               </button>
               {razorpayToken && (
-                <button 
+                <button
                   className="btn btn-ghost btn-xs"
                   onClick={() => {
                     clearMandateToken()
@@ -209,6 +181,59 @@ export default function SettingsPanel() {
             </div>
           </div>
         </Row>
+        <Row label="Cart Mandate & Payment Link Expiry (Minutes)" hint="Active duration before AP2 price freeze and mobile rescue links expire (Razorpay API requires min 15 minutes)">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <input
+              type="number"
+              className="input"
+              style={{ width: 90, textAlign: 'center' }}
+              min={15}
+              max={120}
+              value={config.paymentLinkExpiryMinutes || 15}
+              onChange={e => updateConfig({ paymentLinkExpiryMinutes: Math.max(15, Number(e.target.value)) })}
+            />
+            <span className="text-sm text-muted">minutes (min: 15)</span>
+          </div>
+        </Row>
+        <Row 
+          label="Customer Payment Deadline Safety Buffer (Minutes)" 
+          hint="Buffer subtracted from link expiry so the customer is asked to complete payment earlier (e.g., 15m expiry - 1m buffer tells customer to complete by 14m before the exact deadline, preventing last-second network lapses)"
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <input
+              type="number"
+              className="input"
+              style={{ width: 90, textAlign: 'center' }}
+              min={0}
+              max={10}
+              value={config.paymentBufferMinutes ?? 1}
+              onChange={e => updateConfig({ paymentBufferMinutes: Math.max(0, Math.min(10, Number(e.target.value))) })}
+            />
+            <span className="text-sm text-muted">minute buffer (0-10 mins)</span>
+          </div>
+        </Row>
+      </Section>
+
+      {/* ── Mobile Rescue & Anti-Spam Controls ── */}
+      <Section icon="📱" title="Mobile Rescue & Anti-Spam Notification Controls">
+        <Row
+          label="Send Real SMS via Razorpay"
+          hint="Dispatches carrier SMS with payment link to handset. Turn OFF during testing to prevent SMS spam."
+        >
+          <Toggle
+            checked={userProfile?.enableSmsNotification ?? true}
+            onChange={v => updateUserProfile({ enableSmsNotification: v })}
+          />
+        </Row>
+        <Row
+          label="Enable WhatsApp Deep-Link Rescue"
+          hint="Generates 1-click WhatsApp app / web links for payment rescue away from desktop."
+        >
+          <Toggle
+            checked={userProfile?.enableWhatsappRescue ?? true}
+            onChange={v => updateUserProfile({ enableWhatsappRescue: v })}
+          />
+        </Row>
       </Section>
 
       {/* ── Customer Details ── */}
@@ -242,19 +267,19 @@ export default function SettingsPanel() {
             <option value="dev_mock">Dev Mock Data</option>
           </select>
         </Row>
-        <Row label="Demo Mode" hint="Select checkout flow (Demo 1: Human Present vs Demo 2: Autonomous S2S)">
+        {/* <Row label="Demo Mode" hint="Select checkout flow (Demo 1: Human Present vs Demo 2: Autonomous S2S)">
           <div className="radio-group">
             <button className={`radio-option ${config.demoMode === 'human_present' ? 'selected' : ''}`} onClick={() => updateConfig({ demoMode: 'human_present' })}>
               Demo 1 (Human Present)
             </button>
-            <button 
-              className={`radio-option ${config.demoMode === 'autonomous_s2s' ? 'selected' : ''}`} 
+            <button
+              className={`radio-option ${config.demoMode === 'autonomous_s2s' ? 'selected' : ''}`}
               onClick={() => updateConfig({ demoMode: 'autonomous_s2s' })}
             >
               Demo 2 (Autonomous S2S)
             </button>
           </div>
-        </Row>
+        </Row> */}
       </Section>
 
       {/* ── Voice & Speech ── */}
@@ -301,10 +326,10 @@ export default function SettingsPanel() {
             <span className="text-sm text-muted">{config.maxDeepFetches} products</span>
           </div>
         </Row>
-        <Row 
-          label="Always Run VQA Scanner" 
-          hint={config.enableVqaScanner 
-            ? "ON: Multimodal VQA Vision scans candidates on EVERY query" 
+        <Row
+          label="Always Run VQA Scanner"
+          hint={config.enableVqaScanner
+            ? "ON: Multimodal VQA Vision scans candidates on EVERY query"
             : "OFF (Smart Auto): VQA only runs when visual intent (graphics, print, character) is asked"}
         >
           <Toggle checked={config.enableVqaScanner} onChange={v => updateConfig({ enableVqaScanner: v })} />
@@ -351,59 +376,17 @@ export default function SettingsPanel() {
         </Row>
       </Section>
 
-      {/* ── Order History ── */}
-      <Section icon="🛍️" title="Shopify Order History">
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 10 }}>
-          <button className="btn btn-secondary btn-sm" onClick={fetchOrders} disabled={loadingOrders}>
-            <RefreshCw size={13} className={loadingOrders ? 'animate-spin' : ''} /> Refresh Orders
-          </button>
-        </div>
-        {orders.length === 0 ? (
-          <p className="text-sm text-muted">No orders found on Shopify yet.</p>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {orders.map(o => (
-              <div key={o.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px', background: 'rgba(255,255,255,0.03)', borderRadius: 6, border: '1px solid rgba(255,255,255,0.08)' }}>
-                <div>
-                  <strong>{o.name || o.order_number}</strong>
-                  <span className="text-sm text-muted" style={{ marginLeft: 8 }}>{o.email}</span>
-                </div>
-                <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-                  <span className="badge badge-green">{curr}{Number(o.total_price || 0).toFixed(0)}</span>
-                  <span className="badge badge-purple">{o.financial_status || 'paid'}</span>
-                </div>
-              </div>
-            ))}
+      {/* ── Link to Dedicated Orders & Ledger Page ── */}
+      {/* <div style={{ marginTop: 24, padding: '16px 20px', background: 'rgba(59, 130, 246, 0.08)', borderRadius: 10, border: '1px solid rgba(59, 130, 246, 0.25)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+        <div>
+          <div style={{ fontWeight: 600, fontSize: '0.92rem', color: '#e0e7ff', display: 'flex', alignItems: 'center', gap: 6 }}>
+            📦 Looking for Shopify Orders or Audit Ledger?
           </div>
-        )}
-      </Section>
-
-      {/* ── Transaction Ledger ── */}
-      <Section icon="📖" title="AP2 Transaction Ledger">
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginBottom: 10 }}>
-          <button className="btn btn-secondary btn-sm" onClick={fetchLedger} disabled={loadingLedger}>
-            <RefreshCw size={13} className={loadingLedger ? 'animate-spin' : ''} /> Refresh
-          </button>
-          <button className="btn btn-ghost btn-sm" onClick={handleClearLedger} style={{ color: 'var(--accent-red)' }}>
-            <Trash2 size={13} /> Clear Ledger
-          </button>
-        </div>
-        {ledger.length === 0 ? (
-          <p className="text-sm text-muted">No transactions recorded yet.</p>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {ledger.map((e, idx) => (
-              <div key={idx} style={{ padding: '10px 14px', background: 'rgba(255,255,255,0.03)', borderRadius: 6, border: '1px solid rgba(255,255,255,0.08)', fontSize: '0.82rem' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                  <span className="badge badge-blue">{e.action || 'TRANSACTION'}</span>
-                  <span className="text-muted">{new Date(e.timestamp || Date.now()).toLocaleTimeString()}</span>
-                </div>
-                <div style={{ color: '#cbd5e1' }}>{e.description || JSON.stringify(e)}</div>
-              </div>
-            ))}
+          <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: 2 }}>
+            Verified Shopify orders with 1-click reordering, safeguard refunds, and the reverse-sorted AP2 audit trail have moved to <strong>Orders & Ledger</strong> in the main navigation.
           </div>
-        )}
-      </Section>
+        </div>
+      </div> */}
     </div>
   )
 }
