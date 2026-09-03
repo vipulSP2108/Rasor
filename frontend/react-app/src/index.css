@@ -383,6 +383,39 @@ body {
   border-radius: 99px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+  z-index: 3;
+}
+.product-card-match-badge {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  color: #fff;
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  z-index: 3;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.product-card-hitl-badge {
+  position: absolute;
+  bottom: 12px;
+  left: 12px;
+  background: rgba(239, 68, 68, 0.95);
+  color: white;
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 0.76rem;
+  font-weight: 700;
+  z-index: 3;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 .product-card-actions {
   position: absolute;

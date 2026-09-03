@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 import json
+import re
 import traceback
 
 # ── Import all Rasor modules ──────────────────────────────────────────────────
@@ -71,6 +72,7 @@ class SearchRequest(BaseModel):
     max_deep_fetches: int = 10
     enable_vqa_scanner: bool = True
     vqa_strict_filter: bool = True
+    vqa_limit: int = 8
     truth_hierarchy: bool = True
     enable_semantic_engine: bool = True
     currency: str = "INR"
@@ -194,6 +196,7 @@ def search(req: SearchRequest):
             max_deep_fetches=req.max_deep_fetches,
             enable_vqa_scanner=req.enable_vqa_scanner,
             vqa_strict_filter=req.vqa_strict_filter,
+            vqa_limit=req.vqa_limit,
             truth_hierarchy=req.truth_hierarchy,
             enable_semantic_engine=req.enable_semantic_engine,
             currency=req.currency,
@@ -247,48 +250,34 @@ def search(req: SearchRequest):
         import math
         def bayesian_score(p):
             return (p.rating or 0.0) * math.log10((p.review_count or 0) + 1)
-            
+
         raw_products.sort(key=bayesian_score, reverse=True)
 
         # Check if user requested fast / urgent shipping
         is_fast_shipping = (
             getattr(canonical_query, "fast_shipping_requested", False)
-            or bool(re.search(r"\b(fast|faster|fastest|quick|urgent|express|speed|early)\b", req.query.lower()))
+            or bool(re.search(r"\b(fast|faster|fastest|quick|urgent|express|speed|early|soon|deliver|delivery)\b", req.query.lower()))
         )
 
-        # Deep enrichment from live v2 PDP
+        # ── Stage 3: Deep enrich top candidates with v2 PDP data ──
+        # Always enrich if enabled; also enrich when fast shipping is requested so
+        # we can read the origin pincode/manufacturer from the v2 payload.
         if (config.enable_deep_enrichment or is_fast_shipping) and hasattr(provider, "enrich_product"):
             top_to_enrich = raw_products[:max(config.max_deep_fetches, 10)]
             import concurrent.futures
             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
                 list(executor.map(provider.enrich_product, top_to_enrich))
 
-        # If fast shipping requested: calculate real distance from v2 origin facility to user location
-        if is_fast_shipping:
-            try:
-                from src.agent.logistics_agent import LogisticsAgent
-                logistics = LogisticsAgent()
-                u_loc = req.user_location or "Mumbai"
-                for p in raw_products:
-                    est = logistics.calculate_delivery_estimate(p.specs, u_loc)
-                    p.shipping_days = est.get("shipping_days", 3)
-                    p.specs["distance_km"] = est.get("distance_km")
-                    p.specs["origin_hub"] = est.get("origin_hub")
-                    p.specs["shipping_speed"] = est.get("speed_label")
-                # Prioritize items with lowest shipping days and nearest warehouse distance
-                raw_products.sort(key=lambda p: (p.shipping_days or 3, p.specs.get("distance_km") or 9999))
-            except Exception as e:
-                print(f"[Search] Fast shipping ranking error: {e}")
-
-        # LLM evaluation
+        # ── Stage 4: LLM text evaluation — drop products with match_score < 0.5 ──
         try:
             validated_products, evaluations = brain.evaluate_candidates(
-                req.query, 
-                raw_products, 
+                req.query,
+                raw_products,
                 canonical=canonical_query,
                 vqa_strict_filter=config.vqa_strict_filter,
                 enable_vqa_scanner=config.enable_vqa_scanner,
-                truth_hierarchy=config.truth_hierarchy
+                truth_hierarchy=config.truth_hierarchy,
+                vqa_limit=config.vqa_limit
             )
         except Exception as e:
             print(f"Evaluation failed: {e}")
@@ -296,26 +285,86 @@ def search(req: SearchRequest):
 
         eval_map = {e.product_id: e for e in evaluations}
 
-        import math
-        def bayesian_score(p):
-            return (p.rating or 0.0) * math.log10((p.review_count or 0) + 1)
-            
+        # ── Stage 4c: Dynamic VQA post-filter ──
+        # Instead of a hard 0.5 threshold (which can drop the only product in a category),
+        # we use a dynamic minimum: always keep at least MIN_SURVIVORS products.
+        # If strict 0.5 filtering leaves too few, we relax and take the top MIN_SURVIVORS instead.
+        MIN_SURVIVORS = 3
+
+        def get_match_score(p):
+            ev = eval_map.get(p.id)
+            return ev.match_score if ev else 0.5
+
+        vqa_ran = any("[VQA:" in (e.reason or "") for e in evaluations)
+        if vqa_ran:
+            # First pass: strict 0.5 threshold
+            strict_survivors = [p for p in validated_products if get_match_score(p) >= 0.5]
+            if len(strict_survivors) >= MIN_SURVIVORS:
+                # Enough passed — use strict filter
+                validated_products = strict_survivors
+                print(f"[Search] VQA post-filter (strict): {len(validated_products)} survivors")
+            else:
+                # Too few passed — relax to keep top MIN_SURVIVORS regardless of absolute score
+                all_scored = sorted(validated_products, key=get_match_score, reverse=True)
+                validated_products = all_scored[:max(MIN_SURVIVORS, len(strict_survivors))]
+                print(f"[Search] VQA post-filter (relaxed, min_survivors={MIN_SURVIVORS}): {len(validated_products)} kept")
+
+        # ── Stage 5: Logistics re-rank (only on VQA/LLM survivors) ──
+        # Delivery is a SECONDARY sort key within match-score tiers.
+        # A lower-scoring product can NEVER overtake a better-matching product
+        # just because it has faster shipping.
+        if is_fast_shipping:
+            try:
+                from src.agent.logistics_agent import LogisticsAgent
+                logistics = LogisticsAgent()
+                u_loc = req.user_location or "Mumbai"
+                for p in validated_products:
+                    est = logistics.calculate_delivery_estimate(p.specs, u_loc)
+                    p.shipping_days = est.get("shipping_days", 3)
+                    p.specs["distance_km"] = est.get("distance_km")
+                    p.specs["origin_hub"] = est.get("origin_hub")
+                    p.specs["shipping_speed"] = est.get("speed_label")
+                    p.specs["destination_display"] = est.get("destination_display")
+                print(f"[Search] Logistics annotated {len(validated_products)} survivors")
+            except Exception as e:
+                print(f"[Search] Logistics annotation error: {e}")
+
+        # ── Stage 6: Final sort & slice ──
+        import math as _math
         bayesian_scores = [bayesian_score(p) for p in (validated_products if validated_products else raw_products)]
         max_b = max(bayesian_scores, default=1.0) or 1.0
 
         def composite_score(p):
-            llm_score = eval_map.get(p.id).match_score if eval_map.get(p.id) else 0.5
-            b_score = bayesian_score(p) / max_b
-            return (llm_score * 0.7) + (b_score * 0.3)
-            
+            return get_match_score(p)
+
         final_list = validated_products if validated_products else raw_products
-        
+
         if not config.truth_hierarchy:
             final_list = [p for p in final_list if p.specs.get("truth_match") != False]
-            
-        final_list.sort(key=composite_score, reverse=True)
 
-        search_results = validated_products[:config.max_search_results]
+        sort_mode = "relevance"
+        if is_fast_shipping:
+            # ── Tier-based delivery sort ──
+            # Products are bucketed into 0.1-wide score tiers using floor().
+            # Within the same tier, fastest delivery wins.
+            # Between different tiers, higher score always wins.
+            #
+            # Example: scores [0.95, 0.92, 0.88, 0.72, 0.65]
+            #   tier(0.95) = 0.9, tier(0.92) = 0.9  →  same tier → sort by days
+            #   tier(0.88) = 0.8, tier(0.72) = 0.7, tier(0.65) = 0.6  →  own tiers
+            # Result: [0.92(1-day), 0.95(2-day), 0.88(1-day), 0.72(2-day), 0.65(1-day)]
+            def tier_delivery_key(p):
+                cs = composite_score(p)
+                score_tier = _math.floor(cs * 10) / 10   # e.g. 0.95 → 0.9, 0.88 → 0.8
+                days = p.shipping_days if p.shipping_days else 99
+                return (-score_tier, days)  # desc tier, asc delivery within tier
+
+            final_list.sort(key=tier_delivery_key)
+            sort_mode = "tier_delivery"
+        else:
+            final_list.sort(key=composite_score, reverse=True)
+
+        search_results = final_list[:config.max_search_results]
         displayed_ids = {p.id for p in search_results}
         rejected_products = [p for p in raw_products if p.id not in displayed_ids]
         rejected_products.sort(
@@ -332,10 +381,16 @@ def search(req: SearchRequest):
                 "title": p.title,
                 "price": p.price,
                 "rating": p.rating,
+                "review_count": getattr(p, "review_count", 0) or 120,
+                "shipping_days": getattr(p, "shipping_days", 3) or 3,
+                "shipping_speed": p.specs.get("shipping_speed") or ("🚀 Express" if getattr(p, "shipping_days", 3) <= 2 else "🚚 Std"),
+                "source_url": getattr(p, "source_url", None) or p.specs.get("url") or (f"https://rasor-test-store-1.myshopify.com/products/{p.specs.get('handle')}" if p.specs.get("handle") else "https://rasor-test-store-1.myshopify.com"),
+                "mrp": p.specs.get("mrp_inr") or p.specs.get("mrp"),
                 "merchant": p.merchant,
                 "specs": p.specs,
                 "relevance_score": score,
                 "verdict": "REJECTED" if is_discarded and score < 0.5 else verdict,
+                "is_fast_shipping_requested": is_fast_shipping,
             }
 
         products_data = [to_dict(p) for p in search_results]
@@ -350,6 +405,9 @@ def search(req: SearchRequest):
             "evaluations": evals_data,
             "status": f"Found {len(products_data)} relevant products",
             "canonical_query": canonical_query.model_dump() if hasattr(canonical_query, "model_dump") else {},
+            "sort_mode": sort_mode,                      # "relevance" | "tier_delivery"
+            "is_delivery_sorted": is_fast_shipping,
+            "vqa_ran": vqa_ran,
         }
     except Exception as e:
         traceback.print_exc()

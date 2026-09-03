@@ -12,8 +12,9 @@ const DEFAULT_CONFIG = {
   maxResults: 21,
   enableDeepEnrichment: true,
   maxDeepFetches: 10,
-  enableVqaScanner: true,
+  enableVqaScanner: false,
   vqaStrictFilter: true,
+  vqaLimit: 8,
   truthHierarchy: true,
   enableOfferEngine: true,
   enableSemanticEngine: true,
@@ -24,6 +25,7 @@ const DEFAULT_CONFIG = {
   demoMode: 'human_present',
   voiceEnabled: true,
   voiceURI: null,
+  showMatchPercentage: true,
 }
 
 const INITIAL_CHAT_MESSAGES = [
