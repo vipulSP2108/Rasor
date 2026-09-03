@@ -98,6 +98,10 @@ class AgentConfig(BaseModel):
         default=True,
         description="Master switch to enable or disable the VQA image scanner pipeline."
     )
+    vqa_limit: int = Field(
+        default=8,
+        description="Maximum number of products to scan with VQA Vision. Controls API cost. Range 1-20."
+    )
     truth_hierarchy: bool = Field(
         default=True,
         description="If True, instructs the LLM to prioritize the Product Title over contradicting backend specs."
