@@ -23,7 +23,7 @@ import requests
 
 from src.agent.state import Product
 from src.data.base import BaseCatalogProvider
-from src.data.schema_mapper import parse_requested_sizes
+from src.mapping import parse_requested_sizes, NOISE_WORDS, ShopifyCompiler
 
 _LOCAL_RATINGS_CACHE: Dict[str, Dict[str, float]] = {}
 try:
@@ -35,15 +35,11 @@ except FileNotFoundError:
 load_dotenv()
 
 # ---------------------------------------------------------------------------
-# Constants
+# Constants (Centralized in src.mapping)
 # ---------------------------------------------------------------------------
 SHOPIFY_API_VERSION = "2024-04"
 _SKIP_VALUES: Set[str] = {"any", "all", "general", "none", "", "unknown"}
-_NOISE_WORDS: Set[str] = {
-    "for", "a", "an", "the", "in", "under", "size", "rs", "inr", "usd",
-    "and", "or", "with", "some", "want", "looking", "need", "get", "give",
-    "plain", "solid", "basic"  # these are handled separately as design attributes
-}
+_NOISE_WORDS: Set[str] = set(NOISE_WORDS) | {"plain", "solid", "basic", "size", "some"}
 _KNOWN_COLORS = [
     "black", "white", "blue", "red", "green", "grey", "gray",
     "yellow", "orange", "maroon", "beige", "brown", "purple", "pink",

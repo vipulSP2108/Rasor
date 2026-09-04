@@ -14,176 +14,18 @@ import re
 from typing import Any, Dict, List, Optional
 from src.agent.state import Product
 
-def parse_requested_sizes(size_str: Optional[str]) -> List[str]:
-    """
-    Parses size specifications like 'L/XL', 'M, L', 'XL / XXL', 'L or XL', '2XL'
-    into a list of normalized uppercase size tokens: ['L', 'XL'].
-    """
-    if not size_str:
-        return []
-    cleaned = str(size_str).strip()
-    if cleaned.lower() in ("any", "none", "all", ""):
-        return []
-    cleaned = cleaned.upper().replace("XXXL", "3XL").replace("XXL", "2XL")
-    parts = re.split(r"[/,|]|\bOR\b", cleaned)
-    result = []
-    for p in parts:
-        s = p.strip()
-        if s:
-            result.append(s)
-    return result
-
-
 # ---------------------------------------------------------------------------
-# 1. Bewakoof Handle Registry
-#    Hierarchy: fandom > sleeve+category > category+fit > category > fallback
-#
-# Format: (gender, primary_key) -> handle
-# primary_key priority order: fandom > sleeve > fit > category > "all"
+# 1. Bewakoof Handle Registry & Size Parsing (Centralized in src.mapping)
 # ---------------------------------------------------------------------------
 
-# Fandom-specific handles (most specific — hit these first)
-FANDOM_HANDLE_MAP: Dict[str, str] = {
-    "marvel":       "marvel",
-    "dc":           "batman-merchandise",
-    "batman":       "batman-merchandise",
-    "harry potter": "harry-potter-merchandise",
-    "hogwarts":     "harry-potter-merchandise",
-    "disney":       "disney-merchandise",
-    "looney tunes": "looney-tunes-merchandise",
-    "tom and jerry":"looney-tunes-merchandise",
-    "scooby doo":   "scooby-doo-merchandise",
-    "friends":      "friends-merchandise",
-}
-
-# Design-theme specific handles (second priority — flat design themes)
-DESIGN_HANDLE_MAP: Dict[str, str] = {
-    "typography":   "typography-t-shirts",
-    "oversized":    "oversized-t-shirts",
-    "printed":      "printed-t-shirts",
-    "graphic print":"printed-t-shirts",
-    "acid wash":    "acid-wash-t-shirts",
-    "washed":       "acid-wash-t-shirts",
-}
-
-# Gender + Category + Sleeve matrix (third priority)
-# Keys: (gender, category, sleeve_type) -> handle
-# sleeve_type: "full", "half", None
-CATEGORY_SLEEVE_HANDLE_MAP: Dict[tuple, str] = {
-    ("men",   "t-shirt", "full"):    "men-full-sleeve-t-shirts",
-    ("women", "t-shirt", "full"):    "women-full-sleeve-t-shirts",  # may 404 — falls back
-    ("men",   "t-shirt", "half"):    "men-t-shirts",
-    ("women", "t-shirt", "half"):    "women-t-shirts",
-    ("men",   "t-shirt", None):      "men-t-shirts",
-    ("women", "t-shirt", None):      "women-t-shirts",
-    ("men",   "hoodie",  None):      "men-hoodies-sweatshirts",
-    ("women", "hoodie",  None):      "women-hoodies-sweatshirts",
-    ("men",   "sweatshirt", None):   "men-hoodies-sweatshirts",
-    ("women", "sweatshirt", None):   "women-hoodies-sweatshirts",
-    ("men",   "joggers", None):      "men-joggers",
-    ("women", "joggers", None):      "women-joggers",
-    ("men",   "sliders", None):      "men-sliders",
-    ("men",   "sandals", None):      "men-sliders",
-    ("men",   "footwear", None):     "men-footwear",
-    ("women", "footwear", None):     "women-footwear",
-    ("men",   "jeans",   None):      "jeans-for-men",
-    ("women", "jeans",   None):      "jeans-for-women",
-    ("men",   "shirt",   None):      "men-shirts",
-    ("women", "shirt",   None):      "women-shirts",
-}
-
-# Gender-only fallback
-GENDER_FALLBACK_MAP: Dict[str, str] = {
-    "men":   "men-clothing",
-    "women": "women-clothing",
-    "unisex":"men-clothing",
-    "all":   "men-clothing",
-}
-
-def resolve_handle(
-    gender: str,
-    category: Optional[str],
-    sleeve: Optional[str],
-    fandom: Optional[str],
-    design: Optional[str],
-    fit: Optional[str],
-) -> tuple:
-    """
-    Returns (handle, needs_subclass_filter: bool).
-    Logic:
-      1. If fandom is set → fandom handle (most targeted).
-      2. If design theme is set (typography, oversized, etc.) → design handle.
-      3. Category + sleeve matrix.
-      4. Gender fallback.
-    """
-    g = (gender or "men").lower()
-
-    # 1. Fandom (e.g. "marvel", "dc", "disney")
-    if fandom and fandom.lower() not in ("none", ""):
-        fl = fandom.lower().replace(" / cartoons", "").strip()
-        for key, handle in FANDOM_HANDLE_MAP.items():
-            if fl in key or key in fl:
-                return handle, False
-
-    # 2. Design theme (e.g. "oversized", "typography", "acid wash")
-    if design and design.lower() not in ("any", ""):
-        dl = design.lower()
-        # Map DesignEnum values to keys
-        design_key_map = {
-            "oversized fit": "oversized",
-            "typography":    "typography",
-            "graphic print": "printed",
-            "all over print":"printed",
-            "washed":        "acid wash",
-        }
-        mapped = design_key_map.get(dl, dl)
-        if mapped in DESIGN_HANDLE_MAP:
-            return DESIGN_HANDLE_MAP[mapped], False
-
-    # Check if fit is oversized and category is t-shirt → oversized-t-shirts handle
-    if fit and "oversized" in fit.lower() and category and "t-shirt" in (category or "").lower():
-        return "oversized-t-shirts", False
-
-    # 3. Category + sleeve matrix
-    if category:
-        cl = category.lower().replace("-", "").replace(" ", "")
-        # Normalize category aliases
-        alias_map = {
-            "tshirt": "t-shirt", "tee": "t-shirt", "topwear": "t-shirt",
-            "hoodie": "hoodie", "sweatshirt": "sweatshirt", "jacket": "hoodie",
-            "joggers": "joggers", "trackpants": "joggers", "sweatpants": "joggers",
-            "jeans": "jeans", "denim": "jeans",
-            "shirt": "shirt",
-            "slider": "sliders", "sandal": "sliders", "slipper": "sliders",
-            "shoes": "footwear", "sneakers": "footwear",
-        }
-        normalized_cat = alias_map.get(cl, cl)
-        
-        # Normalize sleeve
-        sleeve_key = None
-        if sleeve:
-            sl = sleeve.lower()
-            if "full" in sl:
-                sleeve_key = "full"
-            elif "half" in sl or "short" in sl:
-                sleeve_key = "half"
-
-        # Try exact match first
-        key = (g, normalized_cat, sleeve_key)
-        if key in CATEGORY_SLEEVE_HANDLE_MAP:
-            handle = CATEGORY_SLEEVE_HANDLE_MAP[key]
-            needs_subclass = handle in ("men-clothing", "women-clothing")
-            return handle, needs_subclass
-        
-        # Try without sleeve
-        key_no_sleeve = (g, normalized_cat, None)
-        if key_no_sleeve in CATEGORY_SLEEVE_HANDLE_MAP:
-            handle = CATEGORY_SLEEVE_HANDLE_MAP[key_no_sleeve]
-            needs_subclass = handle in ("men-clothing", "women-clothing")
-            return handle, needs_subclass
-
-    # 4. Gender fallback
-    return GENDER_FALLBACK_MAP.get(g, "men-clothing"), True
+from src.mapping import (
+    parse_requested_sizes,
+    FANDOM_HANDLE_MAP,
+    DESIGN_HANDLE_MAP,
+    CATEGORY_SLEEVE_HANDLE_MAP,
+    GENDER_FALLBACK_MAP,
+    resolve_handle,
+)
 
 
 # ---------------------------------------------------------------------------

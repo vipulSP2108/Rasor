@@ -18,6 +18,8 @@ from src.data.base import BaseCatalogProvider
 from src.data.schema_mapper import (
     BEWAKOOF_FIELD_MAP,
     UniversalProductMapper,
+)
+from src.mapping import (
     resolve_handle,
     parse_requested_sizes,
 )
