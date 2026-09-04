@@ -71,7 +71,7 @@ export default function SettingsPanel() {
     updateUserProfile
   } = useApp()
 
-  const { voices, speak } = useVoice()
+  const { voices, speak, voiceChannels, setVoiceChannel } = useVoice()
   const curr = config.currency === 'INR' ? '₹' : '$'
   const [isDeletingLinks, setIsDeletingLinks] = useState(false)
 
@@ -368,6 +368,31 @@ export default function SettingsPanel() {
             </button>
           </div>
         </Row>
+
+        <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+          <div style={{ fontSize: '0.8rem', fontWeight: 700, color: '#a5b4fc', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+            🎙️ Autonomous Voice Copilot Channels (Selective Speech)
+          </div>
+          <p style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginBottom: 12 }}>
+            Choose which autonomous events the agent speaks aloud. Silent events will show visual feedback without interrupting ongoing speech.
+          </p>
+
+          <Row label="🤖 AI Chat & Recommendations" hint="Spoken stylist dialogue and outfit suggestions">
+            <Toggle checked={voiceChannels.aiChat} onChange={v => setVoiceChannel('aiChat', v)} />
+          </Row>
+
+          <Row label="📦 Pre-Check Inventory & OOS Swaps" hint="Spoken alerts for zero-latency runner-up substitutions">
+            <Toggle checked={voiceChannels.inventoryOos} onChange={v => setVoiceChannel('inventoryOos', v)} />
+          </Row>
+
+          <Row label="🏛️ Multi-Rail Bank Failovers (Demo 3)" hint="Spoken bank decline notices and cascade rail transitions">
+            <Toggle checked={voiceChannels.failoverRails} onChange={v => setVoiceChannel('failoverRails', v)} />
+          </Row>
+
+          <Row label="🚨 Post-Payment Collision & Instant Refunds" hint="Spoken alerts when item is depleted after payment & 100% refund is issued">
+            <Toggle checked={voiceChannels.postRefund} onChange={v => setVoiceChannel('postRefund', v)} />
+          </Row>
+        </div>
       </Section>
 
       {/* ── Search & Enrichment ── */}

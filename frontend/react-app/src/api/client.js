@@ -29,3 +29,5 @@ export const getAcpFeed = () => api.get('/api/v1/acp/catalog.json')
 export const getRefunds = () => api.get('/api/checkout/refunds')
 export const bulkCancelPaymentLinks = () => api.post('/api/payment-links/bulk-cancel')
 export const cleanStaleRescueLinks = () => api.post('/api/payment-links/clean-stale-rescue')
+export const postPaymentRefund = (data) => api.post('/api/checkout/post-payment-refund', data)
+

@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { 
-  Send, Trash2, Mic, MicOff, Volume2, Sparkles, User, Bot, 
+  Send, Trash2, Mic, MicOff, Volume2, VolumeX, Sparkles, User, Bot, 
   ChevronLeft, ChevronRight, ChevronDown, ChevronUp, RotateCcw, Flame, Palette, Shirt
 } from 'lucide-react'
 import { chatMessage, clearChat, searchProducts } from '../api/client'
@@ -28,7 +28,11 @@ export default function ChatInterface({ onAddToCart, onAutonomousCheckout }) {
   const [isAutoVoice, setIsAutoVoice] = useState(false)
   const [speakingIdx, setSpeakingIdx] = useState(null)
   const [expandedShelves, setExpandedShelves] = useState({})
-  const { isListening, transcript, startListening, stopListening, speak, stopSpeaking, resetTranscript } = useVoice()
+  const { 
+    isListening, transcript, startListening, stopListening, 
+    speak, speakAsync, stopSpeaking, resetTranscript, 
+    voiceChannels, setVoiceChannel 
+  } = useVoice()
   
   const endRef = useRef(null)
   const inputRef = useRef(null)
@@ -94,28 +98,28 @@ export default function ChatInterface({ onAddToCart, onAutonomousCheckout }) {
         user_location: config.userLocation,
       })
 
+      const isVoiceActive = config.voiceEnabled && (voiceChannels?.aiChat ?? true)
       const assistantMsg = {
         role: 'assistant',
         content: data.message,
         suggestedOptions: data.suggested_options || [],
+        voiceEnabled: isVoiceActive,
       }
 
       setChatMessages(prev => [...prev, assistantMsg])
 
-      // Auto-play voice if enabled
-      if (config.voiceEnabled && data.message) {
+      // Auto-play voice if enabled and marked for voice: AWAIT speech to complete cleanly
+      if (assistantMsg.voiceEnabled && data.message) {
         setSpeakingIdx(chatMessages.length + 1)
-        speak(data.message, config.voiceURI, () => {
-          setSpeakingIdx(null)
-          // Listening only begins strictly AFTER the AI finishes speaking
-          if (isAutoVoice) {
-            setTimeout(() => {
-              startListening()
-            }, 400)
-          }
-        })
+        await speakAsync(data.message, { category: 'aiChat', voiceURI: config.voiceURI })
+        setSpeakingIdx(null)
+        // Listening only begins strictly AFTER the AI finishes speaking
+        if (isAutoVoice) {
+          setTimeout(() => {
+            startListening()
+          }, 400)
+        }
       }
-
 
       let currentAvailableProducts = lastCuratedPicksRef.current || []
 
@@ -150,6 +154,7 @@ export default function ChatInterface({ onAddToCart, onAutonomousCheckout }) {
               content: `✨ Found **${prods.length}** curated picks matching your style! Browse them below:`,
               products: prods,
               querySummary: data.updated_query,
+              voiceEnabled: false, // Default shelf announcement to silent to avoid speech collision; toggleable by user
             }])
             // Save lightweight history record
             addHistoryRecord({
@@ -162,6 +167,7 @@ export default function ChatInterface({ onAddToCart, onAutonomousCheckout }) {
             setChatMessages(prev => [...prev, {
               role: 'assistant',
               content: "Hmm, I couldn't find products matching those exact criteria. Want to try a different description or fit?",
+              voiceEnabled: isVoiceActive,
             }])
           }
         } catch (err) {
@@ -207,12 +213,14 @@ export default function ChatInterface({ onAddToCart, onAutonomousCheckout }) {
 
           if (addedItems.length > 0) {
             toast.success(`🛒 Auto-Added: ${addedItems.join(', ')}`, { duration: 5000, icon: '⚡' })
-            speak(`Added to your cart. Initiating autonomous Multi-Rail Failover checkout now.`)
+            if (voiceChannels?.aiChat && config.voiceEnabled) {
+              await speakAsync(`Added to your cart. Initiating autonomous Multi-Rail Failover checkout now.`, { category: 'aiChat' })
+            }
 
-            // Hand off to Demo 3 Multi-Rail Failover checkout
+            // Hand off to Demo 3 Multi-Rail Failover checkout after voice completion
             setTimeout(() => {
               onAutonomousCheckout?.({ mode: 'cascade_failover', autoStart: true })
-            }, 500)
+            }, 300)
           }
         }
       }
@@ -244,14 +252,25 @@ export default function ChatInterface({ onAddToCart, onAutonomousCheckout }) {
     }
   }
 
-  const handlePlayVoice = (text, idx) => {
-    if (speakingIdx === idx) {
-      stopSpeaking()
-      setSpeakingIdx(null)
+  const handleToggleMsgVoice = async (idx) => {
+    const targetMsg = chatMessages[idx]
+    if (!targetMsg) return
+    const currentlyEnabled = targetMsg.voiceEnabled !== false
+
+    if (currentlyEnabled) {
+      if (speakingIdx === idx) {
+        stopSpeaking()
+        setSpeakingIdx(null)
+      }
+      setChatMessages(prev => prev.map((m, i) => i === idx ? { ...m, voiceEnabled: false } : m))
+      toast('Voice muted for this response', { icon: '🔇' })
     } else {
+      setChatMessages(prev => prev.map((m, i) => i === idx ? { ...m, voiceEnabled: true } : m))
       stopSpeaking()
       setSpeakingIdx(idx)
-      speak(text, config.voiceURI, () => setSpeakingIdx(null))
+      toast.success('Speaking response…', { icon: '🔊' })
+      await speakAsync(targetMsg.content, { category: 'aiChat', voiceURI: config.voiceURI })
+      setSpeakingIdx(null)
     }
   }
 
@@ -308,26 +327,40 @@ export default function ChatInterface({ onAddToCart, onAutonomousCheckout }) {
                     .replace(/\n/g, '<br/>')
                 }} />
 
-                {/* Speaker playback */}
+                {/* Per-Message Voice Toggle */}
                 {msg.role === 'assistant' && (
-                  <div className="chat-bubble-footer">
+                  <div className="chat-bubble-footer" style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 }}>
                     <button 
-                      className="btn btn-ghost btn-sm" 
+                      className="btn btn-ghost btn-sm voice-text-toggle" 
                       style={{ 
-                        padding: '3px 8px', 
+                        padding: '3px 9px', 
                         height: 'auto', 
-                        fontSize: '0.75rem', 
-                        color: speakingIdx === i ? '#818cf8' : 'var(--text-muted)',
-                        background: speakingIdx === i ? 'rgba(99, 102, 241, 0.2)' : 'transparent',
-                        border: speakingIdx === i ? '1px solid rgba(99, 102, 241, 0.4)' : '1px solid transparent',
+                        fontSize: '0.72rem', 
+                        fontWeight: 600,
+                        color: (msg.voiceEnabled !== false) ? '#a5b4fc' : '#94a3b8',
+                        background: (msg.voiceEnabled !== false) ? 'rgba(99, 102, 241, 0.18)' : 'rgba(255, 255, 255, 0.05)',
+                        border: (msg.voiceEnabled !== false) ? '1px solid rgba(99, 102, 241, 0.45)' : '1px solid rgba(255, 255, 255, 0.12)',
                         borderRadius: 99,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 5,
+                        cursor: 'pointer',
                         transition: 'all 0.2s ease'
                       }} 
-                      onClick={() => handlePlayVoice(msg.content, i)}
-                      title={speakingIdx === i ? "Stop playback" : "Read aloud"}
+                      onClick={() => handleToggleMsgVoice(i)}
+                      title={msg.voiceEnabled !== false ? "Voice active for this text (Click to mute/disable)" : "Voice muted for this text (Click to speak)"}
                     >
-                      <Volume2 size={13} className={speakingIdx === i ? 'pulsing' : ''} style={{ marginRight: 4 }} />
-                      <span>{speakingIdx === i ? 'Playing…' : 'Listen'}</span>
+                      {msg.voiceEnabled !== false ? (
+                        <>
+                          <Volume2 size={13} className={speakingIdx === i ? 'pulsing' : ''} color={speakingIdx === i ? '#4ade80' : '#818cf8'} />
+                          <span>{speakingIdx === i ? 'Speaking…' : 'Voice: ON'}</span>
+                        </>
+                      ) : (
+                        <>
+                          <VolumeX size={13} color="#94a3b8" />
+                          <span>Voice: OFF</span>
+                        </>
+                      )}
                     </button>
                   </div>
                 )}

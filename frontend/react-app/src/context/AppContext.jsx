@@ -474,13 +474,95 @@ export function AppProvider({ children }) {
     saveSessionJson('rasor_chat_messages', INITIAL_CHAT_MESSAGES)
   }, [])
 
-  const [candidateBuffer, setCandidateBufferState] = useState(() =>
-    loadSessionJson('rasor_candidate_buffer', [])
-  )
+// Default 5-item fashion runner-up buffer (ensures immediate zero-latency demo availability)
+const DEFAULT_CANDIDATE_BUFFER = [
+  {
+    id: "BWK-BEWA-597127-XL",
+    title: "Men's Black NASA Typography Oversized Hoodies",
+    price: 1999,
+    merchant: "Bewakoof",
+    specs: {
+      display_image: "https://images.bewakoof.com/t640/men-s-black-nasa-typography-oversized-hoodies-597127-1763470928-1.jpg",
+      image_url: "https://images.bewakoof.com/t640/men-s-black-nasa-typography-oversized-hoodies-597127-1763470928-1.jpg",
+      variant_ids: { XL: "gid://shopify/ProductVariant/597127-XL" }
+    }
+  },
+  {
+    id: "BWK-BEWA-685340-XL",
+    title: "Men's Jet Black Spiderman Typography Oversized T-shirt",
+    price: 999,
+    merchant: "Bewakoof",
+    specs: {
+      display_image: "https://images.bewakoof.com/t640/685340_2026-03-23t10-12-15_1.jpg",
+      image_url: "https://images.bewakoof.com/t640/685340_2026-03-23t10-12-15_1.jpg",
+      variant_ids: { XL: "gid://shopify/ProductVariant/685340-XL" }
+    }
+  },
+  {
+    id: "BWK-BEWA-556949-XL",
+    title: "Men's Black I Need My Space NASA Typography Sweatshirt",
+    price: 839,
+    merchant: "Bewakoof",
+    specs: {
+      display_image: "https://images.bewakoof.com/t640/men-s-black-i-need-my-space-nasa-typography-sweatshirt-556949-1738310566-1.jpg",
+      image_url: "https://images.bewakoof.com/t640/men-s-black-i-need-my-space-nasa-typography-sweatshirt-556949-1738310566-1.jpg",
+      variant_ids: { XL: "gid://shopify/ProductVariant/556949-XL" }
+    }
+  },
+  {
+    id: "BWK-BEWA-664129-XL",
+    title: "Men's Black NASA Typography Oversized Cargo Joggers",
+    price: 1399,
+    merchant: "Bewakoof",
+    specs: {
+      display_image: "https://images.bewakoof.com/t640/664129_2026-01-14t10-36-41_1.jpg",
+      image_url: "https://images.bewakoof.com/t640/664129_2026-01-14t10-36-41_1.jpg",
+      variant_ids: { XL: "gid://shopify/ProductVariant/664129-XL" }
+    }
+  },
+  {
+    id: "BWK-BEWA-664142-XL",
+    title: "Men's Winter Moss Green NASA Typography Oversized Joggers",
+    price: 1499,
+    merchant: "Bewakoof",
+    specs: {
+      display_image: "https://images.bewakoof.com/t640/664142_2026-01-20t08-19-17_1.jpg",
+      image_url: "https://images.bewakoof.com/t640/664142_2026-01-20t08-19-17_1.jpg",
+      variant_ids: { XL: "gid://shopify/ProductVariant/664142-XL" }
+    }
+  }
+]
+
+  const [candidateBuffer, setCandidateBufferState] = useState(() => {
+    const saved = loadSessionJson('rasor_candidate_buffer', null)
+    return (Array.isArray(saved) && saved.length > 0) ? saved : DEFAULT_CANDIDATE_BUFFER
+  })
 
   const setCandidateBuffer = useCallback((buffer) => {
     setCandidateBufferState(buffer)
     saveSessionJson('rasor_candidate_buffer', buffer)
+  }, [])
+
+  // Simulated OOS Failover Cascade State (Default: 0 — Direct Success)
+  const [simulatedOosCount, setSimulatedOosCountState] = useState(0)
+  const [simulatedOosRemaining, setSimulatedOosRemaining] = useState(0)
+
+  const setSimulatedOosCount = useCallback((count) => {
+    const num = Math.max(0, parseInt(count, 10) || 0)
+    setSimulatedOosCountState(num)
+    setSimulatedOosRemaining(num)
+  }, [])
+
+  // Simulated Post-Payment OOS Race Condition Collision & Instant Refund
+  const [simulatePostPaymentOos, setSimulatePostPaymentOosState] = useState(() =>
+    loadSessionJson('rasor_simulate_post_payment_oos', false)
+  )
+  const [postPaymentRefundData, setPostPaymentRefundData] = useState(null)
+
+  const setSimulatePostPaymentOos = useCallback((val) => {
+    const bool = !!val
+    setSimulatePostPaymentOosState(bool)
+    saveSessionJson('rasor_simulate_post_payment_oos', bool)
   }, [])
 
   const setSearchState = useCallback((patch) => {
@@ -696,6 +778,10 @@ export function AppProvider({ children }) {
       saveMandateToken, clearMandateToken,
       updateMandateLimit, updateMandateTokenId,
       candidateBuffer, setCandidateBuffer,
+      simulatedOosCount, setSimulatedOosCount,
+      simulatedOosRemaining, setSimulatedOosRemaining,
+      simulatePostPaymentOos, setSimulatePostPaymentOos,
+      postPaymentRefundData, setPostPaymentRefundData,
     }}>
       {children}
     </AppContext.Provider>
