@@ -1,12 +1,13 @@
 import React, { useState } from 'react'
 import {
   ShoppingBag, MessageCircle, Search, Settings, BookOpen,
-  BarChart2, ChevronLeft, ChevronRight, Zap, Star, FileText, Scale, History, User, PackageCheck
+  BarChart2, ChevronLeft, ChevronRight, Zap, Star, FileText, Scale, History, User, PackageCheck, Sparkles
 } from 'lucide-react'
 import { useApp } from '../context/AppContext'
 
 const NAV_ITEMS = [
   { id: 'home', icon: <ShoppingBag size={18} />, label: 'Shop', section: 'commerce' },
+  { id: 'outfits', icon: <Sparkles size={18} />, label: 'Outfit Studio', section: 'commerce' },
   { id: 'orders', icon: <PackageCheck size={18} />, label: 'Orders & Ledger', section: 'commerce' },
   { id: 'history', icon: <History size={18} />, label: 'History', section: 'commerce' },
   { id: 'compare', icon: <Scale size={18} />, label: 'Compare', section: 'commerce' },

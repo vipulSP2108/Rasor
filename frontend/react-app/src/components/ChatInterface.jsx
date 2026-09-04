@@ -1,13 +1,16 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { 
   Send, Trash2, Mic, MicOff, Volume2, VolumeX, Sparkles, User, Bot, 
-  ChevronLeft, ChevronRight, ChevronDown, ChevronUp, RotateCcw, Flame, Palette, Shirt
+  ChevronLeft, ChevronRight, ChevronDown, ChevronUp, RotateCcw, Flame, Palette, Shirt,
+  Plus, X, RefreshCw
 } from 'lucide-react'
-import { chatMessage, clearChat, searchProducts } from '../api/client'
+import { chatMessage, clearChat, searchProducts, extractGarmentImage } from '../api/client'
 import { useApp } from '../context/AppContext'
 import { useVoice } from '../hooks/useVoice'
 import ProductCard from './ProductCard'
 import BatchedProductGrid from './BatchedProductGrid'
+import OutfitBundleCard from './OutfitBundleCard'
+import InteractiveOutfitSuite from './InteractiveOutfitSuite'
 import toast from 'react-hot-toast'
 
 const SESSION_ID = 'rasor-stylist'
@@ -48,8 +51,53 @@ export default function ChatInterface({ onAddToCart, onAutonomousCheckout }) {
   
   const endRef = useRef(null)
   const inputRef = useRef(null)
+  const fileInputRef = useRef(null)
   const carouselsRef = useRef({})
   const lastCuratedPicksRef = useRef([])
+
+  // Image attachment state
+  const [attachment, setAttachment] = useState(null)
+  const [isExtractingAttachment, setIsExtractingAttachment] = useState(false)
+
+  const handleAttachmentFile = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    const reader = new FileReader()
+    reader.onload = async (event) => {
+      const b64 = event.target.result
+      setIsExtractingAttachment(true)
+      const toastId = toast.loading('Extracting garment attributes with AI Vision…')
+
+      try {
+        const rawB64 = b64.split(',')[1] || b64
+        const res = await extractGarmentImage({
+          image_b64: rawB64,
+          mime_type: file.type || 'image/jpeg'
+        })
+        const data = res.data
+        const attObj = {
+          thumb: b64,
+          category: data.category || 'garment',
+          color: data.color || 'neutral',
+          fit: data.fit || 'regular',
+          description: data.visual_description || `${data.color} ${data.category}`
+        }
+        setAttachment(attObj)
+        if (!input.trim()) {
+          setInput(`What matches with my ${attObj.color} ${attObj.category}?`)
+        }
+        toast.success(`Identified: ${attObj.color} ${attObj.category}`, { id: toastId })
+      } catch (err) {
+        console.error('Vision extraction error:', err)
+        toast.dismiss(toastId)
+        toast.error('Could not auto-extract garment attributes.')
+      } finally {
+        setIsExtractingAttachment(false)
+      }
+    }
+    reader.readAsDataURL(file)
+  }
 
   // Track latest assistant message index so options chips stay visible
   const latestAssistantIdx = React.useMemo(() => {
@@ -98,12 +146,18 @@ export default function ChatInterface({ onAddToCart, onAutonomousCheckout }) {
   const sendMessage = async (text) => {
     if (!text.trim() || isThinking) return
     const userText = text.trim()
+    const activeAttachment = attachment
+    setAttachment(null)
     stopSpeaking()
     stopListening()
     setSpeakingIdx(null)
     setInput('')
     resetTranscript()
-    setChatMessages(prev => [...prev, { role: 'user', content: userText }])
+    setChatMessages(prev => [...prev, { 
+      role: 'user', 
+      content: userText,
+      attachment: activeAttachment
+    }])
     setIsThinking(true)
 
     // ── Zero-Latency Runner-Up Buffer Interception (0 Model Calls, 0 Network Latency) ──
@@ -157,9 +211,13 @@ export default function ChatInterface({ onAddToCart, onAutonomousCheckout }) {
     }
 
     try {
+      const outgoingText = activeAttachment
+        ? `[Owned Garment Anchor: ${activeAttachment.color} ${activeAttachment.category} (${activeAttachment.fit})] ${userText}`
+        : userText
+
       const history = chatMessages.map(m => ({ role: m.role, content: m.content }))
       const { data } = await chatMessage({
-        message: userText,
+        message: outgoingText,
         history,
         session_id: SESSION_ID,
         data_source: config.dataSource,
@@ -234,8 +292,11 @@ export default function ChatInterface({ onAddToCart, onAutonomousCheckout }) {
 
             setChatMessages(prev => [...prev, {
               role: 'assistant',
-              content: `✨ Found **${prods.length}** curated picks matching your style! Browse them below:`,
+              content: searchData.bundle_data
+                ? `✨ Coordinated an outfit bundle for **"${data.updated_query}"**! Check out the styling match below:`
+                : `✨ Found **${prods.length}** curated picks matching your style! Browse them below:`,
               products: prods,
+              bundleData: searchData.bundle_data,
               querySummary: data.updated_query,
               suggestedOptions: dynamicShelfOptions,
               voiceEnabled: false, // Default shelf announcement to silent to avoid speech collision; toggleable by user
@@ -421,6 +482,17 @@ export default function ChatInterface({ onAddToCart, onAutonomousCheckout }) {
                     .replace(/\n/g, '<br/>')
                 }} />
 
+                {/* User Attached Garment Anchor */}
+                {msg.attachment && (
+                  <div className="chat-msg-attachment-badge" style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 10, background: 'rgba(0,0,0,0.25)', padding: '6px 10px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)' }}>
+                    {msg.attachment.thumb && <img src={msg.attachment.thumb} alt="Garment" style={{ width: 42, height: 42, borderRadius: 4, objectFit: 'cover' }} />}
+                    <div style={{ fontSize: '0.78rem' }}>
+                      <strong style={{ color: '#a5b4fc', display: 'block' }}>Outfit Anchor Attached:</strong>
+                      <span>{msg.attachment.description || `${msg.attachment.color || ''} ${msg.attachment.category || ''}`}</span>
+                    </div>
+                  </div>
+                )}
+
                 {/* Per-Message Voice Toggle */}
                 {msg.role === 'assistant' && (
                   <div className="chat-bubble-footer" style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 }}>
@@ -529,6 +601,19 @@ export default function ChatInterface({ onAddToCart, onAutonomousCheckout }) {
                 </div>
               )}
 
+              {/* Coordinated Interactive Outfit Suite if bundleData is returned */}
+              {msg.bundleData && (
+                <div style={{ marginTop: 14 }}>
+                  <InteractiveOutfitSuite 
+                    bundleData={msg.bundleData}
+                    mode={msg.bundleData.mode}
+                    onAddToCart={onAddToCart}
+                    onAutonomousCheckout={onAutonomousCheckout}
+                    onFollowUp={(promptText) => sendMessage(promptText)}
+                  />
+                </div>
+              )}
+
               {/* Quick Reply Chips in Conversation */}
               {msg.suggestedOptions?.length > 0 && (i === latestAssistantIdx || i === chatMessages.length - 1) && (
                 <div className="chat-chips animate-slide-up">
@@ -569,7 +654,79 @@ export default function ChatInterface({ onAddToCart, onAutonomousCheckout }) {
 
       {/* Modern Glassmorphic Input Bar */}
       <div className="chat-input-bar-container">
+        {/* Voice Listening Banner */}
+        {isListening && (
+          <div className="chat-voice-active-banner animate-slide-up" style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '8px 14px',
+            background: 'rgba(99, 102, 241, 0.18)',
+            border: '1px solid var(--accent-purple)',
+            borderRadius: 'var(--radius-md)',
+            marginBottom: 8,
+            color: '#fff',
+            fontSize: '0.85rem'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div style={{
+                width: 10,
+                height: 10,
+                borderRadius: '50%',
+                background: '#ef4444',
+                boxShadow: '0 0 10px #ef4444'
+              }} />
+              <Mic size={16} style={{ color: '#a5b4fc' }} />
+              <span>{transcript ? `"${transcript}"` : "Listening to your voice... Speak your outfit request!"}</span>
+            </div>
+            <button 
+              type="button" 
+              className="btn btn-sm btn-primary"
+              onClick={() => {
+                stopListening()
+                if (transcript.trim()) {
+                  sendMessage(transcript.trim())
+                }
+              }}
+              style={{ padding: '4px 10px', fontSize: '0.78rem' }}
+            >
+              Send Voice
+            </button>
+          </div>
+        )}
+
+        {/* Attachment preview banner */}
+        {attachment && (
+          <div className="chat-attachment-preview animate-slide-up">
+            <img src={attachment.thumb} alt="Preview" className="attachment-thumb" />
+            <div className="attachment-text">
+              <strong>Outfit Anchor Attached:</strong> {attachment.description || `${attachment.color} ${attachment.category}`}
+            </div>
+            <button type="button" className="attachment-remove-btn" onClick={() => setAttachment(null)} title="Remove attachment">
+              <X size={16} />
+            </button>
+          </div>
+        )}
+
         <div className="chat-input-glass-pill">
+          {/* + Attachment Button */}
+          <input 
+            type="file" 
+            accept="image/*" 
+            ref={fileInputRef} 
+            onChange={handleAttachmentFile} 
+            style={{ display: 'none' }} 
+          />
+          <button 
+            className="chat-attach-btn" 
+            onClick={() => fileInputRef.current?.click()} 
+            title="Attach outfit photo (+)"
+            type="button"
+            disabled={isExtractingAttachment}
+          >
+            {isExtractingAttachment ? <RefreshCw size={16} className="animate-spin" /> : <Plus size={18} />}
+          </button>
+
           <button 
             className="btn btn-ghost btn-icon" 
             onClick={handleClear} 
@@ -585,32 +742,22 @@ export default function ChatInterface({ onAddToCart, onAutonomousCheckout }) {
             value={input}
             onChange={e => { setInput(e.target.value); resetTranscript() }}
             onKeyDown={handleKeyDown}
-            placeholder={isListening ? "🎙️ Listening to your voice..." : "Tell the stylist what you want (e.g. Skin tone 5, party wear)..."}
+            placeholder={isListening ? "🎙️ Listening to your voice..." : "Tell or speak to the stylist (e.g. casual outfit under 2500, party wear)..."}
             rows={1}
             disabled={isThinking}
           />
 
           {/* Voice Mic Controls */}
-          {config.voiceEnabled && (
-            <div className="chat-voice-pill">
-              <button 
-                className={`chat-mic-btn ${isListening ? 'active' : ''}`} 
-                onClick={isListening ? stopListening : startListening}
-                title={isListening ? "Stop recording" : "Speak to AI"}
-              >
-                {isListening ? <MicOff size={16} /> : <Mic size={16} />}
-              </button>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', paddingRight: 4 }}>
-                <input 
-                  type="checkbox" 
-                  checked={isAutoVoice}
-                  onChange={(e) => setIsAutoVoice(e.target.checked)}
-                  style={{ accentColor: 'var(--accent-purple)' }}
-                />
-                Auto
-              </label>
-            </div>
-          )}
+          <div className="chat-voice-pill">
+            <button 
+              className={`chat-mic-btn ${isListening ? 'active' : ''}`} 
+              onClick={isListening ? stopListening : startListening}
+              title={isListening ? "Stop listening" : "Speak to AI Stylist (Voice Input)"}
+              type="button"
+            >
+              {isListening ? <MicOff size={16} /> : <Mic size={16} />}
+            </button>
+          </div>
 
           <button
             className="chat-send-pill-btn"

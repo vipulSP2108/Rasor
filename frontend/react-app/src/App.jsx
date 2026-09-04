@@ -14,11 +14,12 @@ import HistoryPanel from './components/HistoryPanel'
 import AddToCartModal from './components/AddToCartModal'
 import ProfilePanel from './components/ProfilePanel'
 import OrdersPanel from './components/OrdersPanel'
+import OutfitStudio from './components/OutfitStudio'
 import { useApp } from './context/AppContext'
 
 function AppShell() {
   const [page, setPage] = useState('home')
-  const [tab, setTab] = useState('chat')   // 'chat' | 'search' on home page
+  const [tab, setTab] = useState('chat')   // 'chat' | 'outfits' | 'search' on home page
   const [cartOpen, setCartOpen] = useState(false)
   const [autoStartCascade, setAutoStartCascade] = useState(false)
   const [addModal, setAddModal] = useState(null) // Product object or null
@@ -49,14 +50,14 @@ function AppShell() {
         <Topbar onOpenCart={() => setCartOpen(true)} onNavigate={navigate} />
 
         <main className="main-content">
-          {/* Home: Chat + Search */}
+          {/* Home: Chat + Outfits + Search */}
           {page === 'home' && (
             <div>
               {/* Hero */}
               <div className="hero-banner">
                 <h1>Rasor Agentic Commerce</h1>
                 <p>
-                  Your AI-powered personal stylist. Discover fashion, get personalized recommendations, and check out — all through natural conversation.
+                  Your AI-powered personal stylist. Discover fashion, harmonize coordinated outfits with color theory, and checkout autonomously.
                 </p>
                 <div className="protocol-badges">
                   <span className="protocol-badge ap2">AP2</span>
@@ -71,19 +72,22 @@ function AppShell() {
                 <button className={`tab-item ${tab === 'chat' ? 'active' : ''}`} onClick={() => setTab('chat')}>
                   💬 AI Stylist Chat
                 </button>
+                <button className={`tab-item ${tab === 'outfits' ? 'active' : ''}`} onClick={() => setTab('outfits')}>
+                  ✨ Outfit Studio
+                </button>
                 <button className={`tab-item ${tab === 'search' ? 'active' : ''}`} onClick={() => setTab('search')}>
                   🔍 Quick Search
                 </button>
               </div>
 
-              {tab === 'chat'
-                ? <ChatInterface onAddToCart={handleAddToCart} onAutonomousCheckout={handleAutonomousCheckout} />
-                : <SearchPage onAddToCart={handleAddToCart} onAutonomousCheckout={handleAutonomousCheckout} />
-              }
+              {tab === 'chat' && <ChatInterface onAddToCart={handleAddToCart} onAutonomousCheckout={handleAutonomousCheckout} onNavigate={navigate} />}
+              {tab === 'outfits' && <OutfitStudio onAddToCart={handleAddToCart} onAutonomousCheckout={handleAutonomousCheckout} onNavigate={navigate} />}
+              {tab === 'search' && <SearchPage onAddToCart={handleAddToCart} onAutonomousCheckout={handleAutonomousCheckout} />}
             </div>
           )}
 
-          {page === 'chat' && <ChatInterface onAddToCart={handleAddToCart} onAutonomousCheckout={handleAutonomousCheckout} />}
+          {page === 'chat' && <ChatInterface onAddToCart={handleAddToCart} onAutonomousCheckout={handleAutonomousCheckout} onNavigate={navigate} />}
+          {page === 'outfits' && <OutfitStudio onAddToCart={handleAddToCart} onAutonomousCheckout={handleAutonomousCheckout} onNavigate={navigate} />}
           {page === 'search' && <SearchPage onAddToCart={handleAddToCart} onAutonomousCheckout={handleAutonomousCheckout} />}
           {page === 'profile' && <ProfilePanel />}
           {page === 'history' && <HistoryPanel onNavigate={navigate} onAddToCart={handleAddToCart} />}

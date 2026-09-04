@@ -30,4 +30,7 @@ export const getRefunds = () => api.get('/api/checkout/refunds')
 export const bulkCancelPaymentLinks = () => api.post('/api/payment-links/bulk-cancel')
 export const cleanStaleRescueLinks = () => api.post('/api/payment-links/clean-stale-rescue')
 export const postPaymentRefund = (data) => api.post('/api/checkout/post-payment-refund', data)
+export const coordinateBundle = (data) => api.post('/api/bundle/coordinate', data)
+export const matchOutfit = (data) => api.post('/api/outfit/match', data)
+export const extractGarmentImage = (data) => api.post('/api/outfit/extract-image', data)
 

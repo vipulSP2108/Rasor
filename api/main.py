@@ -290,6 +290,23 @@ def search(req: SearchRequest):
         canonical_query = multi_query.items_to_buy[0]
         effective_budget = canonical_query.max_price or config.max_budget
 
+        # If multi-item bundle or match-my-outfit is detected, coordinate full bundle in parallel
+        bundle_data = None
+        if len(multi_query.items_to_buy) >= 2 or len(multi_query.owned_items) > 0:
+            try:
+                from src.agent.bundle_coordinator import BundleCoordinator
+                coordinator = BundleCoordinator(catalog_provider=provider)
+                bundle_data = coordinator.coordinate_bundle(
+                    query=effective_query,
+                    budget=config.max_budget,
+                    items_to_buy=[it.model_dump() for it in multi_query.items_to_buy],
+                    owned_items=[it.model_dump() for it in multi_query.owned_items],
+                    gender=canonical_query.gender.value if canonical_query.gender.value != "all" else None,
+                    provider=provider
+                )
+            except Exception as e:
+                print(f"[Search] Bundle coordination error: {e}")
+
         # Fetch products
         raw_products = provider.search_products(
             query=canonical_query.cleaned_keywords or req.query,
@@ -521,6 +538,7 @@ def search(req: SearchRequest):
             "is_delivery_sorted": is_fast_shipping,
             "vqa_ran": vqa_ran,
             "buy_action": buy_action_dict,
+            "bundle_data": bundle_data,
         }
     except Exception as e:
         traceback.print_exc()
@@ -557,6 +575,97 @@ def chat(req: ChatRequest):
 def clear_chat(session_id: str):
     _stylist_agents.pop(session_id, None)
     return {"cleared": True}
+
+# ── Outfit & Bundle Coordination Endpoints ────────────────────────────────────
+
+class BundleCoordinateRequest(BaseModel):
+    query: Optional[str] = ""
+    budget: Optional[float] = 2500.0
+    items_to_buy: Optional[List[Dict[str, Any]]] = None
+    owned_items: Optional[List[Dict[str, Any]]] = None
+    user_skin_depth: Optional[int] = None
+    user_undertone: Optional[str] = None
+    gender: Optional[str] = None
+    data_source: Optional[str] = "bewakoof"
+
+class OutfitMatchRequest(BaseModel):
+    owned_item: Dict[str, Any]
+    target_category: Optional[str] = "joggers"
+    budget: Optional[float] = 2000.0
+    user_skin_depth: Optional[int] = None
+    user_undertone: Optional[str] = None
+    gender: Optional[str] = None
+    data_source: Optional[str] = "bewakoof"
+
+class ExtractGarmentRequest(BaseModel):
+    image_b64: str
+    mime_type: Optional[str] = "image/jpeg"
+
+@app.post("/api/bundle/coordinate")
+def coordinate_bundle(req: BundleCoordinateRequest):
+    try:
+        from src.agent.bundle_coordinator import BundleCoordinator
+        from src.agent.brain import AgentBrain
+        provider = get_provider(req.data_source)
+        coordinator = BundleCoordinator(catalog_provider=provider)
+        
+        items_to_buy = req.items_to_buy or []
+        owned_items = req.owned_items or []
+        
+        if not items_to_buy and not owned_items and req.query:
+            brain = AgentBrain()
+            mq, _ = brain.normalize_intent(req.query, budget=req.budget)
+            if mq:
+                items_to_buy = [it.model_dump() for it in mq.items_to_buy]
+                owned_items = [it.model_dump() for it in mq.owned_items]
+                
+        result = coordinator.coordinate_bundle(
+            query=req.query,
+            budget=req.budget,
+            items_to_buy=items_to_buy,
+            owned_items=owned_items,
+            user_skin_depth=req.user_skin_depth,
+            user_undertone=req.user_undertone,
+            gender=req.gender,
+            provider=provider
+        )
+        return result
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/outfit/match")
+def match_outfit(req: OutfitMatchRequest):
+    try:
+        from src.agent.bundle_coordinator import BundleCoordinator
+        provider = get_provider(req.data_source)
+        coordinator = BundleCoordinator(catalog_provider=provider)
+        
+        result = coordinator.coordinate_bundle(
+            query="",
+            budget=req.budget,
+            items_to_buy=[{"category": req.target_category}],
+            owned_items=[req.owned_item],
+            user_skin_depth=req.user_skin_depth,
+            user_undertone=req.user_undertone,
+            gender=req.gender,
+            provider=provider
+        )
+        return result
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/outfit/extract-image")
+def extract_garment_image(req: ExtractGarmentRequest):
+    try:
+        from src.agent.outfit_extractor import GarmentVisionExtractor
+        extractor = GarmentVisionExtractor()
+        extracted = extractor.extract_from_base64(req.image_b64, req.mime_type)
+        return extracted
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ── Compare ───────────────────────────────────────────────────────────────────
 class CompareRequest(BaseModel):

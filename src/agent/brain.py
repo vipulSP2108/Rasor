@@ -72,9 +72,10 @@ _SPELL_CORRECTIONS: dict = {
 
 _SYNONYM_MAP: dict = {
     # Category synonyms
-    "tee": "t-shirt", "top": "t-shirt", "topwear": "t-shirt",
+    "tee": "t-shirt", "top": "t-shirt", "topwear": "t-shirt", "uppers": "t-shirt", "upper": "t-shirt",
     "pullover": "hoodie", "jacket": "hoodie", "sweatshirt": "hoodie",
     "trackpants": "joggers", "track pants": "joggers", "sweatpants": "joggers",
+    "lowers": "joggers", "lower": "joggers", "bottoms": "joggers", "bottom": "joggers", "bottomwear": "joggers",
     "denim": "jeans", "jeanss": "jeans",
     "sandal": "sliders", "flip flop": "sliders", "chappal": "sliders",
     "shoes": "footwear", "sneakers": "footwear",
@@ -232,6 +233,9 @@ def get_product_color(title: str, specs: Optional[dict] = None) -> str:
 def preprocess_prompt(prompt: str, enable_semantic: bool = True) -> str:
     """Step 0: Normalize case, fix spelling, expand synonyms and knowledge graph before LLM or rules."""
     text = prompt.strip().lower()
+    
+    # Normalize '3k', '2.5k', 'under 3k' to numeric values
+    text = re.sub(r'\b(\d+(?:\.\d+)?)\s*k\b', lambda m: str(int(float(m.group(1)) * 1000)), text)
     
     # Apply vibe mapping (exact phrase matching)
     for vibe, expansion in _VIBE_MAP.items():
@@ -774,63 +778,100 @@ class AgentBrain:
                 items_to_buy = parse_item_list(data.get("items_to_buy", []))
                 owned_items = parse_item_list(data.get("owned_items", []))
                 
-        # Algorithmic Budget Scaling
+        # Algorithmic Dynamic Budget Scaling
         if budget and len(items_to_buy) >= 2:
-            n_items = len(items_to_buy)
-            max_cap = 0.7 if n_items == 2 else (1.4 / n_items)
-            category_weights = {"jeans": 1.0, "hoodie": 0.9, "joggers": 0.8, "shirt": 0.6, "t-shirt": 0.5, "sliders": 0.3}
-            
-            for item in items_to_buy:
-                if not item.max_price:
-                    weight = category_weights.get(item.category.value, 0.5)
-                    # Scale based on boundary * weight, bounded at absolute max
-                    item.max_price = round(budget * min(max_cap, weight))
+            from src.agent.bundle_coordinator import DynamicBudgetAllocator
+            items_dict = [{"category": item.category.value} for item in items_to_buy]
+            allocated_sub_budgets = DynamicBudgetAllocator.allocate_sub_budgets(items_dict, total_budget=budget)
+            for idx, item in enumerate(items_to_buy):
+                if idx < len(allocated_sub_budgets):
+                    item.max_price = allocated_sub_budgets[idx]
 
-        # Complementary Rule Engine
+        # Relational Complementary Rule Engine (Match My Outfit Mode)
         if owned_items and not items_to_buy:
+            from src.agent.semantic_color_engine import CATEGORY_ZONE_MAP
             for owned in owned_items:
-                # Basic color wheel contrast rules
-                target_cat = CategoryEnum.JEANS if owned.category == CategoryEnum.TSHIRT else CategoryEnum.TSHIRT
-                target_color = ColorEnum.GREY if owned.color == ColorEnum.BLACK else ColorEnum.BEIGE
+                owned_cat = owned.category.value if hasattr(owned.category, 'value') else str(owned.category)
+                owned_zone = CATEGORY_ZONE_MAP.get(owned_cat, "top")
                 
+                # If owned item is a top/outerwear -> target bottoms (joggers/jeans)
+                if owned_zone in ["top", "outerwear"]:
+                    target_cat = CategoryEnum.JOGGERS if "hoodie" in owned_cat or "t-shirt" in owned_cat else CategoryEnum.JEANS
+                    # Light-dark contrast
+                    target_color = ColorEnum.GREY if owned.color.value in ["Black", "Navy", "Dark Navy"] else ColorEnum.BLACK
+                else:
+                    # Owned item is bottom -> target top (t-shirt/hoodie)
+                    target_cat = CategoryEnum.TSHIRT
+                    target_color = ColorEnum.WHITE if owned.color.value in ["Black", "Dark Navy", "Charcoal"] else ColorEnum.BLACK
+
                 comp_item = CanonicalShoppingQuery(
                     original_prompt=user_prompt,
                     cleaned_keywords="",
                     category=target_cat,
-                    color=target_color
+                    color=target_color,
+                    max_price=budget
                 )
                 items_to_buy.append(comp_item)
 
         # Fallback if empty
         if not items_to_buy and not owned_items:
             self.last_model_used = "Rule Engine"
-            parsed_raw = parse_user_intent(cleaned_prompt)
-            
+
             def safe_enum(enum_class, val, default):
                 if val and val in [e.value for e in enum_class]:
                     return val
                 return default.value
 
-            canonical = CanonicalShoppingQuery(
-                original_prompt=user_prompt,
-                cleaned_keywords=parsed_raw.cleaned_query or cleaned_prompt,
-                gender=safe_enum(GenderEnum, parsed_raw.gender, GenderEnum.MEN),
-                category=safe_enum(CategoryEnum, parsed_raw.category, CategoryEnum.TSHIRT),
-                color=safe_enum(ColorEnum, parsed_raw.color, ColorEnum.ANY),
-                design=safe_enum(DesignEnum, parsed_raw.design, DesignEnum.ANY),
-                fit=safe_enum(FitEnum, parsed_raw.fit, FitEnum.ANY),
-                sleeve=safe_enum(SleeveEnum, parsed_raw.sleeve, SleeveEnum.ANY),
-                fabric=FabricEnum.ANY,
-                neck=NeckEnum.ANY,
-                occasion=OccasionEnum.ANY,
-                fandom=safe_enum(FandomEnum, parsed_raw.fandom, FandomEnum.NONE),
-                size=parsed_raw.size,
-                quantity=parsed_raw.quantity or 1,
-                max_price=parsed_raw.max_price,
-                min_rating=parsed_raw.min_rating,
-                fast_shipping_requested=parsed_raw.fast_shipping_requested
-            )
-            items_to_buy.append(canonical)
+            def build_canonical(parsed_raw, part_text):
+                return CanonicalShoppingQuery(
+                    original_prompt=user_prompt,
+                    cleaned_keywords=parsed_raw.cleaned_query or part_text,
+                    gender=safe_enum(GenderEnum, parsed_raw.gender, GenderEnum.MEN),
+                    category=safe_enum(CategoryEnum, parsed_raw.category, CategoryEnum.TSHIRT),
+                    color=safe_enum(ColorEnum, parsed_raw.color, ColorEnum.ANY),
+                    design=safe_enum(DesignEnum, parsed_raw.design, DesignEnum.ANY),
+                    fit=safe_enum(FitEnum, parsed_raw.fit, FitEnum.ANY),
+                    sleeve=safe_enum(SleeveEnum, parsed_raw.sleeve, SleeveEnum.ANY),
+                    fabric=FabricEnum.ANY,
+                    neck=NeckEnum.ANY,
+                    occasion=OccasionEnum.ANY,
+                    fandom=safe_enum(FandomEnum, parsed_raw.fandom, FandomEnum.NONE),
+                    size=parsed_raw.size,
+                    quantity=parsed_raw.quantity or 1,
+                    max_price=parsed_raw.max_price,
+                    min_rating=parsed_raw.min_rating,
+                    fast_shipping_requested=parsed_raw.fast_shipping_requested
+                )
+
+            # Check for multi-item conjunctions (e.g. "olive hoodie and black joggers", "shirt with jeans")
+            split_patterns = [r"\s+and\s+", r"\s+with\s+", r"\s*\+\s*", r"\s*&\s*"]
+            parts = []
+            for sp in split_patterns:
+                if re.search(sp, cleaned_prompt):
+                    candidate_parts = [p.strip() for p in re.split(sp, cleaned_prompt) if p.strip()]
+                    if len(candidate_parts) >= 2:
+                        parts = candidate_parts
+                        break
+
+            if len(parts) >= 2:
+                for p_text in parts[:3]:
+                    parsed_part = parse_user_intent(p_text)
+                    if parsed_part.category:
+                        items_to_buy.append(build_canonical(parsed_part, p_text))
+
+            # If multi-item splitting found >= 2 items, allocate dynamic budgets
+            if len(items_to_buy) >= 2 and budget:
+                from src.agent.bundle_coordinator import DynamicBudgetAllocator
+                items_dict = [{"category": item.category.value} for item in items_to_buy]
+                allocated_sub_budgets = DynamicBudgetAllocator.allocate_sub_budgets(items_dict, total_budget=budget)
+                for idx, item in enumerate(items_to_buy):
+                    if idx < len(allocated_sub_budgets):
+                        item.max_price = allocated_sub_budgets[idx]
+
+            # If still single item or no parts matched
+            if not items_to_buy:
+                parsed_raw = parse_user_intent(cleaned_prompt)
+                items_to_buy.append(build_canonical(parsed_raw, cleaned_prompt))
             
         multi_query = MultiShoppingQuery(original_prompt=user_prompt, items_to_buy=items_to_buy, owned_items=owned_items)
         return multi_query, f"🧠 Normalized by {self.last_model_used}"

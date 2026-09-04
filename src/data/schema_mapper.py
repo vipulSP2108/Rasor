@@ -371,6 +371,8 @@ class UniversalProductMapper:
                 "member_price_inr":member_price,
                 "available_sizes": available_sizes,
                 "image_url":       full_img_url,
+                "display_image":   full_img_url,
+                "images":          [full_img_url] if full_img_url else [],
                 "discount_offer":  raw.get("offer") or raw.get("product_discount"),
             }
 
@@ -391,6 +393,8 @@ class UniversalProductMapper:
                 shipping_days=3,
                 shipping_cost=0.0 if price > 499 else 50.0,
                 source_url=product_url,
+                image_url=full_img_url,
+                images=[full_img_url] if full_img_url else [],
                 specs=specs,
                 discount_codes=["TRIBE10", "WELCOME100"] if member_price else []
             )

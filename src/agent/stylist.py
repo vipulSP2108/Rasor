@@ -149,8 +149,12 @@ YOUR DECISION RULES (follow these strictly):
    - If Gender OR Category is missing: Ask them together (e.g., "Are we shopping for men's or women's, and what specific clothing item?").
    - If Occasion is missing: Ask what the occasion or vibe is (e.g., "Is this for a party, the gym, or just casual wear?").
    - If Color is missing: Ask what color they want. IMPORTANT: If they don't know, proactively offer the skin tone feature (e.g., "If you're unsure, I can pick the perfect color for your skin tone! Just rate your skin tone from 1 (Fair) to 10 (Deep).")
-   - If Fit OR Size is missing (and applicable): Ask them together (e.g., "What fit and size are you looking for?").
-   - MULTI-ITEM OUTFITS: If the user requests a multi-item bundle (e.g., "a hoodie and joggers") but has not specified a maximum budget, you MUST ask for their total budget (e.g., "What is your total budget for this outfit?") before searching.
+   - MULTI-ITEM OUTFITS & FREE-FORM PROMPTS (e.g., "I want 2 uppers and 1 lower under 3k", "give me 2 shirts", "2 uppers"):
+      * If user gives items and budget (e.g. "I want 2 uppers and 1 lower under 3k"): Set intent="search", ready_for_search=true, updated_query="<items and budget>".
+      * If budget is missing: You MUST ask for their total budget (e.g., "What total budget would you like to stay under for these pieces?") with suggested options like ["Under ₹2,000", "Under ₹3,000", "Under ₹4,000", "No Budget Cap"].
+      * If style variety is ambiguous (e.g. "2 uppers"): Ask if they prefer two distinct upper styles (such as a hoodie or jacket layered over a t-shirt) or two shirts/tees (suggest options: ["Layered: Hoodie + T-shirt", "Jacket + T-shirt", "Two Different Shirts", "Two Casual T-shirts"]).
+   - MATCH MY OUTFIT / OWNED ITEMS: If the user mentions an item they already own or attach an outfit photo (e.g., "I have an olive hoodie", "what matches my black joggers", "I uploaded a photo of my jacket"):
+     Acknowledge the owned item's attributes and ask what category they want to pair it with (e.g., "What would you like to pair with your olive hoodie — relaxed joggers, denim jeans, or clean footwear?") and their target budget. Macro terms like 'lowers' or 'uppers' are fully supported!
    Set intent="clarify", ready_for_search=false.
 
 3. PROACTIVE SUGGESTIONS (Vibe/Occasion):
@@ -192,15 +196,15 @@ YOUR DECISION RULES (follow these strictly):
    - Set buy_action={"action": "buy_items", "targets": [1, 2], "quantities": [1, 1]} (or targets: [1] if only 1 item requested)
    - In message: Confirm enthusiastically that you're picking the top items and launching the autonomous Multi-Rail Failover checkout immediately!
 
-9. CONVERSATIONAL BUY FROM EXISTING PICKS: If curated picks were already displayed in the conversation and the user wants to buy from them (e.g., "buy the top pick", "buy 1 and 2", "buy #1", "buy 2", "han bhai pic 1 and pic 2"):
+9. CONVERSATIONAL BUY FROM EXISTING PICKS & BUNDLES: If curated picks or bundles were already displayed in the conversation and the user wants to buy from them (e.g., "buy the top pick", "buy 1 and 2", "buy this outfit", "buy the bundle", "order both items", "buy both"):
    - Single item ("buy the top pick", "buy #1", "buy first one", "buy this"):
      Set intent="buy", ready_for_search=false,
      buy_action={"action": "buy_items", "targets": [1], "quantities": [1]},
      message="Adding the top pick to your cart and initiating autonomous Multi-Rail Failover checkout now."
-   - Multiple items ("buy 1 and 2", "buy #1 and #2", "buy top 2", "pic 1 and 2"):
+   - Multiple items / Full Bundle / Coordinated Outfit ("buy 1 and 2", "buy #1 and #2", "buy top 2", "pic 1 and 2", "buy this outfit", "buy the bundle", "order both", "buy both"):
      Set intent="buy", ready_for_search=false,
      buy_action={"action": "buy_items", "targets": [1, 2], "quantities": [1, 1]},
-     message="Adding picks #1 and #2 to your cart and initiating autonomous Multi-Rail Failover checkout now."
+     message="Adding the coordinated outfit (picks #1 and #2) to your cart and initiating autonomous Multi-Rail Failover checkout now."
    - Ambiguous quantity ("buy 2", "order 2" without any picks yet or without specifying which):
      If no items are chosen and no category is given:
      Set intent="clarify_quantity", ready_for_search=false,
@@ -387,6 +391,35 @@ class StylistAgent:
                 updated_query="best rated men t-shirt"
             )
         
+        # Multi-Item / Bundle Intent Check
+        is_multi_item = bool(re.search(r"\b(?:\d+|two|three)\s*(?:uppers?|lowers?|tops?|bottoms?|shirts?|t-?shirts?|hoodies?|pants?)\b", u)) or bool(re.search(r"\b(?:and|&|\+)\s*(?:\d+|one|a|an)?\s*(?:lower|upper|bottom|top|jogger|jean|pant)\b", u))
+        has_budget_in_text = bool(re.search(r"(?:under|below|budget|within|max|<|<=|rs\.?|inr|₹)\s*\d+|(\d+\s*(?:k|thousand))", all_user_text, re.IGNORECASE))
+        
+        if is_multi_item:
+            if not has_budget_in_text:
+                if re.search(r"\b(?:2|two)\s*(?:uppers?|tops?)\b", u):
+                    return StylistResponse(
+                        intent="clarify",
+                        message="Great! To coordinate the best 2 uppers for you: What budget would you like to stay under, and would you prefer 2 distinct styles (like a hoodie and a t-shirt) or two shirts?",
+                        ready_for_search=False,
+                        updated_query="",
+                        suggested_options=["Under ₹2,500", "Under ₹3,500", "Layered: Hoodie + Tee", "Two Casual Shirts"]
+                    )
+                return StylistResponse(
+                    intent="clarify",
+                    message="I'd love to coordinate those pieces for you! What is your total budget to stay under for the complete outfit?",
+                    ready_for_search=False,
+                    updated_query="",
+                    suggested_options=["Under ₹1,500", "Under ₹2,500", "Under ₹3,500", "No Budget Cap"]
+                )
+            else:
+                return StylistResponse(
+                    intent="search",
+                    message="Coordinating your multi-item outfit bundle within your budget now... 🛍️",
+                    ready_for_search=True,
+                    updated_query=u
+                )
+
         # Detect key signals in the accumulated context
         has_category = bool(re.search(r"\b(t-?shirts?|tees?|hoodies?|joggers?|jeans?|shirts?|polos?|trousers?|shorts?|sweatshirts?)\b", all_user_text, re.IGNORECASE))
         has_color = bool(re.search(r"\b(black|white|blue|red|green|yellow|grey|gray|navy|maroon|olive|pink|orange|dark|light)\b", all_user_text, re.IGNORECASE))
@@ -537,10 +570,23 @@ class StylistAgent:
                     buy_action=BuyAction(action="buy_items", targets=[1], quantities=[2])
                 )
 
-        # Direct multi-item outside clarification: "buy 1 and 2", "han bhai pic 1 and pic 2", "1 and 2", "pic 1 and pic 2"
-        has_direct_1_and_2 = bool(('1' in text and '2' in text and (re.search(r'(&|\band\b|\baur\b|\bboth\b|\bplus\b|,)', text) or 'pic' in text or 'pick' in text)))
-        has_direct_multi_kw = bool(re.search(r'\b(both|different|two\s*different|two\s*picks|two\s*pics|first\s*two|top\s*two|dono|alag)\b', text))
-        if has_direct_1_and_2 or has_direct_multi_kw or re.search(r"\b(?:buy|order|get|purchase|checkout)\s+(?:#?1\s*(?:and|&)\s*#?2|top\s*2|first\s*2|first\s*two)\b", text):
+        # Guard: If user is describing clothing/bundles they want (e.g. "want 2 uppers and 1 lower", "give me 2 shirts", "need 2 t-shirts"),
+        # this is a search/coordination request, NOT a checkout trigger for existing picks!
+        is_garment_search = bool(re.search(r"\b(?:want|looking\s*for|find|search|give\s*me|need|show|coordinate)\b", text)) and bool(
+            re.search(r"\b(?:uppers?|lowers?|tops?|bottoms?|shirts?|t-?shirts?|hoodies?|pants?|jeans?|joggers?)\b", text)
+        )
+        if is_garment_search:
+            return None
+
+        # Direct multi-item outside clarification: "buy 1 and 2", "pic 1 and pic 2", "#1 and #2", "both picks"
+        has_buy_verb = bool(re.search(r"\b(?:buy|order|get|purchase|checkout|take|add\s*(?:to\s*cart)?)\b", text))
+        has_pick_ref = bool(re.search(r"\b(?:picks?|pics?|items?|combo|outfit|#1|#2)\b", text))
+        has_direct_1_and_2 = bool(
+            re.search(r"\b(?:#?1\s*(?:and|&|\+|,|aur)\s*#?2|pic(?:k)?\s*1\s*(?:and|&|\+|,|aur)\s*pic(?:k)?\s*2|items?\s*1\s*(?:and|&)\s*2)\b", text)
+            or (has_buy_verb and re.search(r"\b1\b.*\b2\b", text))
+        )
+        has_direct_multi_kw = bool(re.search(r"\b(both\s*picks?|different\s*picks?|two\s*different\s*picks?|first\s*two\s*picks?|top\s*two\s*picks?|dono)\b", text))
+        if (has_buy_verb or has_pick_ref) and (has_direct_1_and_2 or has_direct_multi_kw or re.search(r"\b(?:buy|order|get|purchase|checkout)\s+(?:#?1\s*(?:and|&)\s*#?2|top\s*2|first\s*2|first\s*two)\b", text)):
             return StylistResponse(
                 intent="buy",
                 message="Adding picks #1 and #2 to your cart and launching autonomous Multi-Rail Failover checkout now.",
