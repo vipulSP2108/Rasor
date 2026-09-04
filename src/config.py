@@ -65,7 +65,7 @@ class AgentConfig(BaseModel):
     mode: ExecutionMode = Field(default=ExecutionMode.LIVE)
     ui_mode: UIMode = Field(default=UIMode.CHAT, description="Frontend UX paradigm")
     data_source: DataSourceType = Field(default=DataSourceType.GOOGLE_SHOPPING_SCRAPER)
-    primary_model: str = "gemini-2.5-flash"
+    primary_model: str = "gemini-3.1-flash-lite"
     fallback_model: str = "llama-3.3-70b-versatile"
     
     # Financial & Guardrail Settings
@@ -99,7 +99,7 @@ class AgentConfig(BaseModel):
         description="Master switch to enable or disable the VQA image scanner pipeline."
     )
     vqa_limit: int = Field(
-        default=8,
+        default=16,
         description="Maximum number of products to scan with VQA Vision. Controls API cost. Range 1-20."
     )
     truth_hierarchy: bool = Field(

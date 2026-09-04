@@ -49,10 +49,53 @@ export function useVoice() {
     }
   }, []);
 
-  // Initialize Speech Recognition
+  // Clean up timers and audio recognition on unmount
   useEffect(() => {
+    return () => {
+      if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
+      if (recognitionRef.current) {
+        try { recognitionRef.current.abort(); } catch (e) {}
+        recognitionRef.current = null;
+      }
+    };
+  }, []);
+
+  const stopListening = useCallback(() => {
+    if (silenceTimeoutRef.current) {
+      clearTimeout(silenceTimeoutRef.current);
+      silenceTimeoutRef.current = null;
+    }
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+      } catch (e) {}
+      recognitionRef.current = null;
+    }
+    setIsListening(false);
+  }, []);
+
+  // Lazy on-demand Speech Recognition instantiation (Zero background CPU / audio threads when idle)
+  const startListening = useCallback(() => {
+    if (window.speechSynthesis && window.speechSynthesis.speaking) {
+      return;
+    }
+
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (SpeechRecognition) {
+    if (!SpeechRecognition) {
+      console.warn("Speech Recognition not supported in this browser.");
+      return;
+    }
+
+    // Stop any existing instance
+    if (recognitionRef.current) {
+      try { recognitionRef.current.abort(); } catch (e) {}
+      recognitionRef.current = null;
+    }
+
+    setTranscript('');
+    if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
+
+    try {
       const recognition = new SpeechRecognition();
       recognition.continuous = true;
       recognition.interimResults = true;
@@ -76,11 +119,8 @@ export function useVoice() {
         if (latestTranscript.trim()) {
           if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
           silenceTimeoutRef.current = setTimeout(() => {
-            if (recognitionRef.current) {
-              try { recognitionRef.current.stop(); } catch (e) {}
-            }
-            setIsListening(false);
-          }, 2500);
+            stopListening();
+          }, 2200);
         }
       };
 
@@ -88,51 +128,23 @@ export function useVoice() {
         if (event.error !== 'no-speech') {
           console.warn('Speech recognition notice:', event.error);
         }
-        if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
-        setIsListening(false);
+        stopListening();
       };
 
       recognition.onend = () => {
-        if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
-        setIsListening(false);
+        stopListening();
       };
 
       recognitionRef.current = recognition;
-    }
-    
-    return () => {
-      if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
-    };
-  }, []);
-
-  const stopListening = useCallback(() => {
-    if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.stop();
-      } catch (e) {}
-      setIsListening(false);
-    }
-  }, []);
-
-  const startListening = useCallback(() => {
-    if (window.speechSynthesis && window.speechSynthesis.speaking) {
-      return;
-    }
-    if (recognitionRef.current) {
-      setTranscript('');
-      if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
-      
-      try {
-        recognitionRef.current.start();
-        setIsListening(true);
-      } catch (e) {}
+      recognition.start();
+      setIsListening(true);
 
       silenceTimeoutRef.current = setTimeout(() => {
         stopListening();
       }, 8000);
-    } else {
-      console.warn("Speech Recognition not supported in this browser.");
+    } catch (err) {
+      console.warn('Failed to start speech recognition:', err);
+      setIsListening(false);
     }
   }, [stopListening]);
 

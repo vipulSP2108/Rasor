@@ -38,14 +38,30 @@ function Toggle({ checked, onChange }) {
 }
 
 export default function ProfilePanel() {
-  const { userProfile, updateUserProfile } = useApp()
-  const [form, setForm] = useState(userProfile)
+  const { userProfile, updateUserProfile, config, updateConfig } = useApp()
+  const [form, setForm] = useState(() => ({
+    ...userProfile,
+    email: userProfile?.email || config?.customerEmail || 'vipulapatil21@gmail.com',
+    customerEmail: config?.customerEmail || userProfile?.email || 'vipulapatil21@gmail.com',
+    userLocation: config?.userLocation || userProfile?.userLocation || 'Mumbai',
+  }))
   const [copiedCard, setCopiedCard] = useState(false)
 
   const handleSave = (e) => {
     e.preventDefault()
-    updateUserProfile(form)
-    toast.success('Profile preferences saved successfully!')
+    const emailVal = form.email || form.customerEmail || 'vipulapatil21@gmail.com'
+    const locVal = form.userLocation || 'Mumbai'
+    updateUserProfile({
+      ...form,
+      email: emailVal,
+      customerEmail: emailVal,
+      userLocation: locVal,
+    })
+    updateConfig({
+      customerEmail: emailVal,
+      userLocation: locVal,
+    })
+    toast.success('Profile preferences & customer details saved successfully!')
   }
 
   const handleCopyCard = () => {
@@ -226,13 +242,43 @@ export default function ProfilePanel() {
           </div>
         </div>
 
-        {/* Section 3: Contact & Handset Information */}
+        {/* Section 3: Customer Details & Delivery Location */}
         <div className="settings-section">
           <div className="settings-section-header">
-            <Smartphone size={18} />
-            <span>Contact & Handset Information</span>
+            <span style={{ fontSize: 18 }}>👤</span>
+            <span>Customer Details & Delivery Location</span>
           </div>
           <div className="settings-section-body">
+            <div className="settings-row">
+              <div className="settings-label">
+                <strong>Shopify Account Email</strong>
+                <span>Orders will be synced under this account and used for AP2 Intent Mandates.</span>
+              </div>
+              <input
+                type="email"
+                className="input"
+                style={{ width: 260 }}
+                value={form.email || form.customerEmail || ''}
+                onChange={e => setForm(f => ({ ...f, email: e.target.value, customerEmail: e.target.value }))}
+                placeholder="vipulapatil21@gmail.com"
+              />
+            </div>
+
+            <div className="settings-row">
+              <div className="settings-label">
+                <strong>Default Delivery Location</strong>
+                <span>Used for delivery distance calculations & warehouse routing.</span>
+              </div>
+              <input
+                type="text"
+                className="input"
+                style={{ width: 260 }}
+                value={form.userLocation || ''}
+                onChange={e => setForm(f => ({ ...f, userLocation: e.target.value }))}
+                placeholder="e.g. 424001, Mumbai, Delhi"
+              />
+            </div>
+
             <div className="settings-row">
               <div className="settings-label">
                 <strong>Full Name</strong>
@@ -259,21 +305,6 @@ export default function ProfilePanel() {
                 value={form.phone || ''}
                 onChange={e => setForm(f => ({ ...f, phone: e.target.value }))}
                 placeholder="+918806549952"
-              />
-            </div>
-
-            <div className="settings-row">
-              <div className="settings-label">
-                <strong>Email Address</strong>
-                <span>Used for Shopify receipt generation and AP2 Intent Mandates.</span>
-              </div>
-              <input
-                type="email"
-                className="input"
-                style={{ width: 260 }}
-                value={form.email || ''}
-                onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
-                placeholder="vipulapatil21@gmail.com"
               />
             </div>
           </div>

@@ -34,6 +34,9 @@ from src.agent.parser import parse_user_intent
 load_dotenv()
 
 
+# In-memory VQA scan cache: (image_url, prompt_prefix) -> vqa_result_dict
+_VQA_CACHE: dict = {}
+
 # ---------------------------------------------------------------------------
 # 1. Spell Correction & Synonym Map
 #    These run BEFORE the LLM to pre-clean user typos and synonyms.
@@ -47,10 +50,13 @@ _SPELL_CORRECTIONS: dict = {
     "sweat shirt": "sweatshirt", "hooide": "hoodie", "hoddie": "hoodie",
     "jogger": "joggers", "joogers": "joggers",
     "slipper": "sliders", "sliders": "sliders",
-    "batman": "batman", "bataman": "batman", "btaman": "batman",
-    "spiderman": "spider man", "spiderman": "spider man",
-    "ironman": "iron man", "iron-man": "iron man",
+    "batman": "batman", "bataman": "batman", "btaman": "batman", "batmn": "batman",
+    "spiderman": "spider man", "spideman": "spider man", "spidermn": "spider man",
+    "ironman": "iron man", "iron-man": "iron man", "iroman": "iron man", "irom man": "iron man",
     "captainamerica": "captain america",
+    "panther": "panther", "pather": "panther", "black pather": "black panther",
+    "pantheer": "panther", "black pantheer": "black panther",
+    "deapool": "deadpool", "wolvrine": "wolverine",
     "oversized": "oversized", "oversize": "oversized", "over size": "oversized",
     "baggy": "baggy", "loose": "oversized",
     "full sleve": "full sleeve", "full sleev": "full sleeve", "full slv": "full sleeve",
@@ -100,8 +106,8 @@ _SYNONYM_MAP: dict = {
 
 _FANDOM_KNOWLEDGE_GRAPH: dict = {
     # Marvel
-    "black panther": ["wakanda", "forever", "t'challa", "vibranium", "marvel"],
-    "panther": ["wakanda", "forever", "t'challa", "vibranium", "marvel"],
+    "black panther": ["wakanda", "t'challa", "vibranium", "marvel"],
+    "panther": ["wakanda", "t'challa", "vibranium", "marvel"],
     "spiderman": ["spider-man", "peter parker", "miles morales", "web", "marvel"],
     "spider-man": ["spider", "peter parker", "miles morales", "web", "marvel"],
     "ironman": ["iron man", "tony stark", "stark industries", "arc reactor", "marvel"],
@@ -152,9 +158,9 @@ _FANDOM_KNOWLEDGE_GRAPH: dict = {
 }
 
 _CHARACTER_ENTITY_MAP: dict = {
-    "black panther": ["black panther", "wakanda", "t'challa", "shuri", "killmonger", "panther"],
+    "black panther": ["black panther", "black pantheer", "black pather", "pather", "wakanda", "t'challa", "tchalla", "shuri", "killmonger", "the king", "king black panther", "panther"],
     "iron man": ["iron man", "ironman", "tony stark", "arc reactor", "war machine"],
-    "spider-man": ["spider-man", "spiderman", "peter parker", "miles morales"],
+    "spider-man": ["spider-man", "spiderman", "peter parker", "miles morales", "spider punk", "spider-punk", "brand new day"],
     "venom": ["venom", "symbiote", "carnage", "eddie brock"],
     "moon knight": ["moon knight", "marc spector"],
     "batman": ["batman", "dark knight", "bruce wayne", "gotham"],
@@ -165,10 +171,38 @@ _CHARACTER_ENTITY_MAP: dict = {
     "wolverine": ["wolverine", "logan"],
     "joker": ["joker"],
     "superman": ["superman", "clark kent"],
+    "ghost rider": ["ghost rider", "spirit of vengeance", "johnny blaze"],
+    "fantastic four": ["the four", "fantastic four", "mr fantastic", "human torch", "invisible woman"],
+    "punisher": ["punisher", "frank castle"],
+    "daredevil": ["daredevil", "matt murdock"],
     "naruto": ["naruto", "sasuke", "kakashi", "hokage"],
     "dragon ball": ["goku", "vegeta", "dbz", "dragon ball"],
     "one piece": ["luffy", "zoro", "one piece"],
     "jujutsu kaisen": ["gojo", "sukuna", "itadori", "jjk"],
+}
+
+_ENTITY_FRANCHISE_MAP: dict = {
+    "black panther": "marvel",
+    "iron man": "marvel",
+    "spider-man": "marvel",
+    "venom": "marvel",
+    "moon knight": "marvel",
+    "deadpool": "marvel",
+    "captain america": "marvel",
+    "thor": "marvel",
+    "hulk": "marvel",
+    "wolverine": "marvel",
+    "ghost rider": "marvel",
+    "fantastic four": "marvel",
+    "punisher": "marvel",
+    "daredevil": "marvel",
+    "batman": "dc",
+    "joker": "dc",
+    "superman": "dc",
+    "naruto": "anime",
+    "dragon ball": "anime",
+    "one piece": "anime",
+    "jujutsu kaisen": "anime",
 }
 
 _VIBE_MAP: dict = {
@@ -180,6 +214,20 @@ _VIBE_MAP: dict = {
     "gym": "regular fit solid black grey blue",
     "cozy": "oversized fit solid grey beige brown"
 }
+
+def get_product_color(title: str, specs: Optional[dict] = None) -> str:
+    """Accurately extracts product color from specs or title adjective."""
+    if specs and specs.get("color"):
+        return str(specs.get("color", "")).lower().strip()
+    clean_title = re.sub(r"^(men's|women's|boys'|girls'|unisex)\s+", "", (title or "").lower())
+    m = re.match(
+        r"^(jet\s+black|dark\s+shadow\s+grey|dark\s+grey|light\s+grey|navy\s+blue|olive\s+green|"
+        r"black|white|grey|gray|green|blue|red|yellow|maroon|beige|brown|orange|pink|purple|teal)\b",
+        clean_title
+    )
+    if m:
+        return m.group(1).strip()
+    return ""
 
 def preprocess_prompt(prompt: str, enable_semantic: bool = True) -> str:
     """Step 0: Normalize case, fix spelling, expand synonyms and knowledge graph before LLM or rules."""
@@ -212,6 +260,82 @@ def preprocess_prompt(prompt: str, enable_semantic: bool = True) -> str:
     
     return text
 
+def get_semantic_affinity_tier(
+    product: Product,
+    target_char_key: Optional[str] = None,
+    target_char_terms: Optional[List[str]] = None,
+    query_text: str = ""
+) -> int:
+    """Returns an integer semantic affinity tier (4 down to 0) representing closeness to user intent:
+      Tier 4 (Exact Target Entity/Character): Direct match for target subject (e.g. 'black panther').
+      Tier 3 (Core Lore / Associated Sub-Entities): Direct lore, iconic aliases, or related key entities
+             (e.g. for Black Panther: 'wakanda', 't'challa', 'the king', 'panther').
+      Tier 2 (Parent Universe / Franchise): Parent universe without the character (e.g. 'marvel', 'dc', 'anime').
+      Tier 1 (Neutral Category / Color): Matches generic attributes without conflicting characters.
+      Tier 0 (Conflicting Character): Features a different/opposing character.
+    """
+    p_title = (product.title or "").lower()
+    p_specs = product.specs or {}
+    p_fandom = str(p_specs.get("fandom_partner", "")).lower()
+    p_design = str(p_specs.get("design", "")).lower()
+    p_subclass = str(p_specs.get("subclass", "")).lower()
+    p_text = f"{p_title} {p_fandom} {p_design} {p_subclass}".lower()
+
+    if target_char_key:
+        # 1. Conflicting Character Check
+        for other_key, other_terms in _CHARACTER_ENTITY_MAP.items():
+            if other_key != target_char_key:
+                if any(re.search(rf"\b{re.escape(ot)}\b", p_text) for ot in other_terms):
+                    return 0  # Tier 0: Conflicting character
+
+        # 2. Exact Target Character Check
+        exact_terms = [target_char_key, target_char_key.replace("-", " "), target_char_key.replace(" ", "")]
+        if target_char_key == "black panther":
+            exact_terms.extend(["black panther", "black pantheer", "black pather", "king black panther", "t'challa", "tchalla"])
+        elif target_char_key == "spider-man":
+            exact_terms.extend(["spider-man", "spiderman", "spider man", "peter parker", "miles morales"])
+        elif target_char_key == "iron man":
+            exact_terms.extend(["iron man", "ironman", "tony stark"])
+        elif target_char_key == "batman":
+            exact_terms.extend(["batman", "dark knight", "bruce wayne"])
+        elif target_char_key == "wolverine":
+            exact_terms.extend(["wolverine", "logan"])
+        elif target_char_key == "captain america":
+            exact_terms.extend(["captain america", "steve rogers"])
+
+        if any(re.search(rf"\b{re.escape(et)}\b", p_text) for et in exact_terms):
+            return 4  # Tier 4: Exact Character Match
+
+        # 3. Lore / Sub-Entity / Direct Lore Characters
+        lore_terms = target_char_terms or _CHARACTER_ENTITY_MAP.get(target_char_key, [])
+        if any(re.search(rf"\b{re.escape(lt)}\b", p_text) for lt in lore_terms if lt not in exact_terms):
+            return 3  # Tier 3: Core Lore / Direct Sub-Entity
+
+        # 4. Parent Universe / Franchise
+        parent_universe = _ENTITY_FRANCHISE_MAP.get(target_char_key)
+        if parent_universe and (
+            re.search(rf"\b{re.escape(parent_universe)}\b", p_text) or
+            parent_universe in p_fandom
+        ):
+            return 2  # Tier 2: Parent Franchise / Universe
+
+        # 5. Neutral Category Match
+        return 1  # Tier 1: Neutral Category
+
+    # If no target character, compute general keyword affinity
+    q_words = [w for w in re.findall(r"[a-z0-9]+", (query_text or "").lower()) if len(w) > 2]
+    if q_words:
+        matched = sum(1 for w in q_words if w in p_text)
+        ratio = matched / len(q_words)
+        if ratio >= 0.75:
+            return 4
+        elif ratio >= 0.45:
+            return 3
+        elif ratio >= 0.2:
+            return 2
+    return 1
+
+
 def calculate_dynamic_composite_match(
     user_prompt: str,
     canonical: Optional["CanonicalShoppingQuery"],
@@ -221,116 +345,136 @@ def calculate_dynamic_composite_match(
     target_char_key: Optional[str],
     target_char_terms: List[str]
 ) -> Tuple[float, bool, str]:
-    """Calculates a dynamically-weighted composite match score based on:
-    1. Explicit query constraint satisfaction (genre/category, color, gender, placement).
-    2. Character/entity match vs conflicting character penalty.
-    3. Dynamic VQA headroom allocation (scales visual accuracy against available score headroom).
-    4. Dynamic Bayesian popularity/rating headroom allocation.
+    """Calculates a precision composite match score with calibrated headroom.
+    Ensures text-only matches cap around 0.78-0.82, leaving 0.83-0.95 reserved
+    for true multimodal visual verification (VQA) and high-affinity matches.
     """
     import math
-    prompt_lower = user_prompt.lower()
-    p_title = product.title.lower()
+    prompt_lower = (user_prompt or "").lower()
+    p_title = (product.title or "").lower()
     p_specs = product.specs or {}
-    p_text = f"{product.title} {p_specs.get('fandom_partner', '')} {p_specs.get('design', '')} {p_specs.get('color', '')}".lower()
+    p_text = f"{product.title} {p_specs.get('fandom_partner', '')} {p_specs.get('design', '')} {p_specs.get('color', '')} {p_specs.get('subclass', '')}".lower()
 
-    # 1. Character Match vs Conflicting Character
-    is_char_match = False
-    is_conflicting_char = False
-    if target_char_key:
-        if target_char_terms and any(t in p_text for t in target_char_terms):
-            is_char_match = True
-        else:
-            for other_key, other_terms in _CHARACTER_ENTITY_MAP.items():
-                if other_key != target_char_key and any(ot in p_text for ot in other_terms):
-                    is_conflicting_char = True
-                    break
+    # 1. Semantic Affinity Tier & Conflicting Character Check
+    affinity_tier = get_semantic_affinity_tier(product, target_char_key, target_char_terms, user_prompt)
+    if affinity_tier == 0 and target_char_key:
+        return 0.35, False, f"Different character from requested {target_char_key.title()}"
 
-    # If product features a conflicting character, hard cap at <= 0.38
-    if is_conflicting_char:
-        return 0.38, False, f"Different character ({p_title[:30]}) from requested {target_char_key.title()}"
-
-    # Strip character names before detecting standalone colors/attributes (e.g. 'black panther' shouldn't imply black t-shirt)
-    prompt_for_attrs = re.sub(r"\b(black\s+panther|iron\s+man|spider-man|spiderman|captain\s+america)\b", "", prompt_lower)
-
-    cat_in_prompt = bool(re.search(r"\b(t-shirt|tshirt|tee|shirt|hoodie|joggers|jeans|pants|vest|polo|top|shorts)\b", prompt_for_attrs))
-    color_in_prompt = None
-    for c in ["black", "white", "blue", "red", "green", "grey", "gray", "yellow", "maroon", "beige", "brown", "navy", "orange", "pink", "purple"]:
-        if re.search(rf"\b{c}\b", prompt_for_attrs):
-            color_in_prompt = c
-            break
-    gender_in_prompt = bool(re.search(r"\b(men|man|women|woman|boy|girl|guy|lady|male|female|friend|boyfriend|husband|brother|father|son)\b", prompt_for_attrs))
-    placement_in_prompt = bool(re.search(r"\b(front|back|chest|printed|graphic|print|embroidery)\b", prompt_for_attrs))
-
+    # 2. Base score allocation based on affinity tier
     base_score = 0.15
-
-    if is_char_match:
-        base_score += 0.35
+    if affinity_tier == 4:
+        base_score += 0.30  # Exact Character
+    elif affinity_tier == 3:
+        base_score += 0.25  # Core Lore / Sub-entity
+    elif affinity_tier == 2:
+        base_score += 0.12  # Parent Franchise / Universe
     elif target_char_key is None:
-        base_score += 0.25
+        base_score += 0.20  # Generic query
+    else:
+        base_score += 0.05  # General garment when specific character was asked
 
-    # Category / Genre satisfaction
-    if cat_in_prompt:
-        # User explicitly asked for t-shirt/shirt/etc.
+    # 3. Category satisfaction
+    cat_match = bool(re.search(r"\b(t-?shirt|tee|shirt|hoodie|joggers|jeans|pants|vest|polo|top|shorts)\b", prompt_lower))
+    if cat_match:
         if any(cat in p_title or cat in str(p_specs.get("subclass", "")).lower() for cat in ["t-shirt", "tee", "shirt", "tshirt", "hoodie", "polo"]):
-            base_score += 0.14
+            base_score += 0.16
     else:
-        # Vague query: user did NOT specify genre/category in prompt
-        base_score += 0.02
+        base_score += 0.10
 
-    # Color satisfaction
-    if color_in_prompt:
-        if color_in_prompt in p_title or color_in_prompt in str(p_specs.get("color", "")).lower():
-            base_score += 0.08
-    else:
-        base_score += 0.00
-
-    # Gender / Recipient satisfaction
-    if gender_in_prompt:
-        base_score += 0.04
-
-    # Placement / Print satisfaction
-    if placement_in_prompt and ("graphic" in p_title or "print" in p_title):
-        base_score += 0.04
-
-    base_score = min(0.75, max(0.35, base_score))
-
-    # 3. Dynamic Headroom Allocation
-    headroom = max(0.05, 1.0 - base_score)
-
-    vqa_bonus = 0.0
-    vqa_reason = ""
-    is_relevant = True
-
-    if vqa_data:
-        is_vis = bool(vqa_data.get("is_visual_match", False))
-        vis_score = float(vqa_data.get("visual_score", 0.0))
-        vqa_reason = vqa_data.get("reason", "")
-
-        if is_vis or vis_score >= 0.5:
-            # Confirmed visual match: receives dynamic share of headroom
-            vqa_bonus = headroom * 0.35 * max(vis_score, 0.70)
-            is_relevant = True
-        elif is_char_match:
-            # Matches character but specific pose/shield differed: modest partial boost
-            vqa_bonus = headroom * 0.10 * max(vis_score, 0.20)
-            is_relevant = True
+    # 4. Color satisfaction
+    has_indifferent_color = bool(re.search(
+        r"\b(no\s*(?:as\s*such\s*)?(?:specific\s*)?colou?r|any\s*colou?r|not\s*particular\s*(?:about\s*)?colou?r|whichever\s*colou?r|colour\s*(?:is\s*)?not\s*(?:an?\s*)?issue)\b",
+        prompt_lower
+    ))
+    p_color = get_product_color(product.title, p_specs)
+    
+    if has_indifferent_color:
+        base_score += 0.12  # Neutral credit to all colors
+    elif target_char_key == "black panther":
+        # Disentangle character name "Black Panther" from garment fabric color
+        prompt_without_char = re.sub(r"\b(black\s*panther|black\s*pather|black\s*pantheer)\b", "", prompt_lower)
+        if re.search(r"\bblack\b", prompt_without_char):
+            # User explicitly requested black fabric outside the character name
+            if "black" in p_color or "jet black" in p_color:
+                base_score += 0.14
+            else:
+                base_score += 0.04
         else:
-            is_relevant = is_vis
-    elif is_char_match:
-        vqa_bonus = headroom * 0.05
-        is_relevant = True
+            # Color was only mentioned as part of "black panther"; don't penalize white/grey/green Black Panther tees
+            if "black" in p_color or "jet black" in p_color:
+                base_score += 0.12
+            else:
+                base_score += 0.10
+    else:
+        detected_color = None
+        for c in ["black", "white", "blue", "red", "green", "grey", "gray", "yellow", "maroon", "beige", "brown", "navy", "orange", "pink", "purple", "teal"]:
+            if re.search(rf"\b{c}\b", prompt_lower):
+                detected_color = c
+                break
 
-    # Bayesian rating/popularity contribution (up to 25% of headroom)
+        if detected_color:
+            if (detected_color in p_color) or ("black" in detected_color and ("black" in p_color or "jet black" in p_color)):
+                base_score += 0.14
+            else:
+                base_score += 0.02
+        else:
+            base_score += 0.10
+
+    # 5. Design / Print / Fit satisfaction
+    if "graphic" in prompt_lower or "print" in prompt_lower:
+        if "graphic" in p_text or "printed" in p_text or "print" in p_text:
+            base_score += 0.08
+
+    if "oversized" in prompt_lower or "baggy" in prompt_lower:
+        if "oversized" in p_text or "oversized" in str(p_specs.get("fit", "")).lower():
+            base_score += 0.04
+
+    # 6. Fandom / Franchise recognition
+    if "marvel" in prompt_lower and ("marvel" in p_text or "marvel" in str(p_specs.get("fandom_partner", "")).lower()):
+        base_score += 0.04
+    elif "dc" in prompt_lower and ("dc" in p_text or "batman" in p_text or "superman" in p_text):
+        base_score += 0.04
+
+    # 7. Token overlap bonus for product title
+    stopwords = {"for", "the", "in", "of", "and", "with", "a", "an", "to", "at", "by", "on", "men", "mens", "women", "womens"}
+    query_tokens = [w for w in re.findall(r"[a-z0-9]+", prompt_lower) if w not in stopwords and len(w) > 1]
+    title_tokens = set(re.findall(r"[a-z0-9]+", p_title))
+    overlap_count = sum(1 for tok in query_tokens if tok in title_tokens)
+    overlap_ratio = overlap_count / max(len(query_tokens), 1)
+    overlap_bonus = 0.05 * overlap_ratio
+
+    # 8. Bayesian popularity tie-breaker (max 0.02)
     rating = float(product.rating or 4.0)
     reviews = int(product.review_count or 100)
     b_raw = rating * math.log10(reviews + 1)
     b_norm = min(1.0, max(0.1, b_raw / 16.5))
-    bayesian_bonus = headroom * 0.25 * b_norm
+    bayesian_bonus = 0.02 * b_norm
 
-    final_score = base_score + vqa_bonus + bayesian_bonus
-    final_score = round(min(0.95, max(0.40 if is_relevant else 0.20, final_score)), 2)
+    # 9. LLM text evaluation blending (if LLM returned a score)
+    llm_blend = 0.0
+    if raw_text_score and 0.0 < raw_text_score <= 1.0 and raw_text_score != 0.5:
+        llm_blend = (raw_text_score - 0.5) * 0.04
 
-    reason = vqa_reason or f"Constraint match ({int(base_score*100)}%) + Bayesian ({int(b_norm*100)}%)"
+    # 10. Dynamic VQA vision bonus / penalty
+    vqa_bonus = 0.0
+    vqa_reason = ""
+    if vqa_data:
+        is_vis = bool(vqa_data.get("is_visual_match", False))
+        vis_score = float(vqa_data.get("visual_score", 0.0))
+        vqa_reason = vqa_data.get("reason", "")
+        if is_vis or vis_score >= 0.70:
+            vqa_bonus = 0.14 * max(vis_score, 0.75)
+        elif not is_vis and vis_score < 0.40:
+            vqa_bonus = -0.06
+        elif affinity_tier >= 3:
+            vqa_bonus = 0.04 * max(vis_score, 0.30)
+
+    final_score = base_score + overlap_bonus + vqa_bonus + bayesian_bonus + llm_blend
+    # Cap calibrated max at 0.95 to reserve 0.90+ strictly for multimodal visual excellence
+    final_score = round(min(0.95, max(0.35, final_score)), 2)
+    is_relevant = (final_score >= 0.45)
+
+    reason = vqa_reason or f"Tier {affinity_tier} ({int(base_score*100)}%) + Overlap ({int(overlap_ratio*100)}%) + Bayes ({int(b_norm*100)}%)"
     return final_score, is_relevant, reason
 
 # ---------------------------------------------------------------------------
@@ -384,19 +528,36 @@ class AgentBrain:
         return None
 
     def _call_gemini_vision(self, prompt: str, image_url: str) -> Optional[str]:
-        """Call Gemini Vision model to evaluate an image against a prompt."""
+        """Call Gemini Vision model to evaluate an image against a prompt with caching, retries, and model fallback."""
         if not self.gemini_key:
             return None
+
+        # 1. Check in-memory cache
+        cache_key = f"{image_url}:{prompt.strip()[:100]}"
+        if cache_key in _VQA_CACHE:
+            return json.dumps(_VQA_CACHE[cache_key])
+
         try:
-            # 1. Download image with strict timeout
             import base64
+            import time
             headers = {
                 "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
             }
-            img_resp = requests.get(image_url, headers=headers, timeout=3)
-            if img_resp.status_code != 200:
+            img_resp = None
+            for attempt in range(2):
+                try:
+                    img_resp = requests.get(image_url, headers=headers, timeout=5)
+                    if img_resp.status_code == 200:
+                        break
+                except Exception as e:
+                    if attempt == 1:
+                        print(f"[Brain/VQA] Image download failed ({image_url[:50]}...): {e}")
+                    time.sleep(0.3)
+
+            if not img_resp or img_resp.status_code != 200:
                 return None
+
             img_b64 = base64.b64encode(img_resp.content).decode("utf-8")
             
             mime_type = "image/jpeg"
@@ -405,12 +566,6 @@ class AgentBrain:
             elif image_url.lower().endswith(".webp"):
                 mime_type = "image/webp"
 
-            # 2. Call Gemini with ultra-fast vision model
-            model_to_use = "gemini-3.1-flash-lite"
-            url = (
-                f"https://generativelanguage.googleapis.com/v1beta/models/"
-                f"{model_to_use}:generateContent?key={self.gemini_key}"
-            )
             payload = {
                 "contents": [
                     {
@@ -425,15 +580,40 @@ class AgentBrain:
                         ]
                     }
                 ],
-                "generationConfig": {"temperature": 0.1},
+                "generationConfig": {"temperature": 0.1, "responseMimeType": "application/json"},
             }
-            resp = requests.post(url, json=payload, timeout=6)
-            if resp.status_code == 200:
-                text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-                self.last_model_used = f"Google {model_to_use} (Vision)"
-                return text
-        except Exception:
-            pass
+
+            candidate_models = ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite"]
+            for model_to_use in candidate_models:
+                url = (
+                    f"https://generativelanguage.googleapis.com/v1beta/models/"
+                    f"{model_to_use}:generateContent?key={self.gemini_key}"
+                )
+                for retry in range(2):
+                    try:
+                        resp = requests.post(url, json=payload, timeout=10)
+                        if resp.status_code == 200:
+                            text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+                            self.last_model_used = f"Google {model_to_use} (Vision)"
+                            extracted = self._extract_json(text)
+                            if extracted:
+                                _VQA_CACHE[cache_key] = extracted
+                            return text
+                        elif resp.status_code == 429:
+                            print(f"[Brain/VQA] 429 rate limit on {model_to_use}, retrying in 0.5s...")
+                            time.sleep(0.5)
+                            continue
+                        else:
+                            print(f"[Brain/VQA] HTTP {resp.status_code} on {model_to_use}: {resp.text[:100]}")
+                            break
+                    except requests.exceptions.Timeout:
+                        print(f"[Brain/VQA] Timeout (10s) on {model_to_use} (attempt {retry+1}/2)")
+                        time.sleep(0.3)
+                    except Exception as e:
+                        print(f"[Brain/VQA] Error on {model_to_use}: {e}")
+                        break
+        except Exception as e:
+            print(f"[Brain/VQA] Unhandled vision error: {e}")
         return None
 
     def _call_groq(self, prompt: str, system: str) -> Optional[str]:
@@ -665,7 +845,7 @@ class AgentBrain:
         vqa_strict_filter: bool = False,
         enable_vqa_scanner: bool = True,
         truth_hierarchy: bool = True,
-        vqa_limit: int = 8
+        vqa_limit: int = 16
     ) -> Tuple[List[Product], List[ProductRelevanceEvaluation]]:
         """LLM QA: Verifies retrieved products against user intent. Rejects false positives.
 
@@ -691,8 +871,6 @@ class AgentBrain:
                 pos_signals.append(f"color={canonical.color.value}")
             if canonical.design.value != "Any":
                 pos_signals.append(f"design={canonical.design.value}")
-            if canonical.fit.value != "Any":
-                pos_signals.append(f"fit={canonical.fit.value}")
             if canonical.neck.value != "Any":
                 pos_signals.append(f"neck={canonical.neck.value}")
             if canonical.fandom.value != "None":
@@ -700,14 +878,26 @@ class AgentBrain:
         if pos_signals:
             constraint_lines.append(f"POSITIVE REQUIREMENTS (must be present for a high match_score): {', '.join(pos_signals)}")
 
-        # Character / Entity detection from prompt
+        # Multi-source Character / Entity detection
         target_char_key = None
         target_char_terms = []
-        user_prompt_lower = user_prompt.lower()
-        for char_key, char_terms in _CHARACTER_ENTITY_MAP.items():
-            if any(re.search(rf"\b{re.escape(term)}\b", user_prompt_lower) for term in char_terms):
-                target_char_key = char_key
-                target_char_terms = char_terms
+        sources_to_check = [
+            user_prompt.lower(),
+            preprocess_prompt(user_prompt, enable_semantic=False).lower(),
+        ]
+        if canonical:
+            if getattr(canonical, "cleaned_keywords", None):
+                sources_to_check.append(str(canonical.cleaned_keywords).lower())
+            if getattr(canonical, "fandom", None) and canonical.fandom.value != "None":
+                sources_to_check.append(str(canonical.fandom.value).lower())
+
+        for text_source in sources_to_check:
+            for char_key, char_terms in _CHARACTER_ENTITY_MAP.items():
+                if any(re.search(rf"\b{re.escape(term)}\b", text_source) for term in char_terms):
+                    target_char_key = char_key
+                    target_char_terms = char_terms
+                    break
+            if target_char_key:
                 break
 
         if target_char_key:
@@ -783,6 +973,15 @@ class AgentBrain:
         evaluations: List[ProductRelevanceEvaluation] = []
         accepted: List[Product] = []
 
+        import math
+        def candidate_sort_key(p):
+            score = next((e.match_score for e in evaluations if e.product_id == p.id), 0.0)
+            tier = get_semantic_affinity_tier(p, target_char_key, target_char_terms, user_prompt)
+            rating = float(p.rating or 4.0)
+            reviews = int(p.review_count or 100)
+            bayes = rating * math.log10(reviews + 1)
+            return (score, tier, bayes)
+
         if raw_json:
             data = self._extract_json(raw_json)
             if data:
@@ -795,11 +994,13 @@ class AgentBrain:
                     # - If enable_vqa_scanner is False: Smart mode: ONLY run when visual intent is asked.
                     # - For plain common items with toggle OFF, VQA is skipped.
                     # ---------------------------------------------------------
-                    has_explicit_visual_intent = bool(canonical and canonical.has_visual_intent)
+                    has_explicit_visual_intent = bool(canonical and canonical.has_visual_intent) or bool(
+                        re.search(r"\b(standing|hands?\s*(?:are\s*)?cross(?:ed)?|arms?\s*cross(?:ed)?|pose|back\s*print|front\s*print|chest\s*logo|artwork)\b", user_prompt.lower())
+                    )
                     should_run_vqa = bool(enable_vqa_scanner) or has_explicit_visual_intent
 
                     if should_run_vqa:
-                        target_visual = (canonical.specific_visual_intent if has_explicit_visual_intent else None) or user_prompt
+                        target_visual = (canonical.specific_visual_intent if (canonical and canonical.has_visual_intent) else None) or user_prompt
                         print(f"[Brain] Executing VQA Scanning for: '{target_visual}' (always_run={enable_vqa_scanner}, visual_intent={has_explicit_visual_intent})")
                         vqa_prompt = (
                             f"The user has a visual requirement for this clothing item: '{target_visual}'.\n"
@@ -827,12 +1028,15 @@ class AgentBrain:
                         def vqa_priority_key(p):
                             ev = eval_map.get(p.id, {})
                             score = float(ev.get("match_score", 0.0))
-                            p_text = f"{p.title} {p.specs.get('fandom_partner', '')} {p.specs.get('design', '')}".lower()
-                            char_bonus = 2.0 if (target_char_terms and any(t in p_text for t in target_char_terms)) else 0.0
-                            return (char_bonus, score)
+                            tier = get_semantic_affinity_tier(p, target_char_key, target_char_terms, user_prompt)
+                            rating = float(p.rating or 4.0)
+                            reviews = int(p.review_count or 100)
+                            bayes = rating * math.log10(reviews + 1)
+                            return (tier, score, bayes, p.id)
 
                         vqa_candidates.sort(key=vqa_priority_key, reverse=True)
-                        vqa_candidates = vqa_candidates[:vqa_limit]
+                        effective_vqa_limit = max(vqa_limit, 16) if has_explicit_visual_intent else vqa_limit
+                        vqa_candidates = vqa_candidates[:effective_vqa_limit]
                         
                         vqa_results = {}
                         import concurrent.futures
@@ -847,7 +1051,7 @@ class AgentBrain:
                             if vqa_data:
                                 vqa_results[p.id] = vqa_data
 
-                        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
                             list(executor.map(run_single_vqa, vqa_candidates))
                     else:
                         vqa_results = {}
@@ -879,22 +1083,84 @@ class AgentBrain:
                         if is_relevant and final_score >= 0.45:
                             accepted.append(p)
                     
-                    # Sort accepted by match score
-                    accepted.sort(key=lambda x: next((e.match_score for e in evaluations if e.product_id == x.id), 0), reverse=True)
+                    # Sort accepted by match score, affinity tier, and bayesian score
+                    accepted.sort(key=candidate_sort_key, reverse=True)
                     return accepted, evaluations
                 except Exception as e:
                     print(f"[Brain/Eval] Error: {e}")
 
-        # Fallback — accept all with default score
+        # Fallback — evaluate all candidates via deterministic multi-attribute & entity scoring
+        print("[Brain/Eval] Using deterministic multi-attribute scoring engine (no flat default score)")
+        has_explicit_visual_intent = bool(canonical and canonical.has_visual_intent) or bool(
+            re.search(r"\b(standing|hands?\s*(?:are\s*)?cross(?:ed)?|arms?\s*cross(?:ed)?|pose|back\s*print|front\s*print|chest\s*logo|artwork)\b", user_prompt.lower())
+        )
+        should_run_vqa = bool(enable_vqa_scanner) or has_explicit_visual_intent
+        fallback_vqa_results = {}
+        if should_run_vqa:
+            target_visual = (canonical.specific_visual_intent if (canonical and canonical.has_visual_intent) else None) or user_prompt
+            vqa_prompt = (
+                f"The user has a visual requirement for this clothing item: '{target_visual}'.\n"
+                "Look closely at the design, graphic, and features of the product in the image.\n"
+                "Respond with ONLY a JSON object in this format:\n"
+                '{"is_visual_match": true|false, "visual_score": 0.0-1.0, "reason": "short explanation"}'
+            )
+            import concurrent.futures
+            def run_fallback_vqa(p):
+                img_url = p.specs.get("image_url") or p.specs.get("display_image")
+                if not img_url:
+                    return
+                vqa_raw = self._call_gemini_vision(vqa_prompt, img_url)
+                if vqa_raw:
+                    vqa_data = self._extract_json(vqa_raw)
+                    if vqa_data:
+                        fallback_vqa_results[p.id] = vqa_data
+
+            top_candidates_for_vqa = sorted(
+                candidates,
+                key=lambda p: (
+                    get_semantic_affinity_tier(p, target_char_key, target_char_terms, user_prompt),
+                    float(p.rating or 4.0) * math.log10((p.review_count or 100) + 1),
+                    p.id
+                ),
+                reverse=True
+            )[:vqa_limit]
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+                list(executor.map(run_fallback_vqa, top_candidates_for_vqa))
+
         for p in candidates:
-            evaluations.append(ProductRelevanceEvaluation(
+            final_score, is_relevant, reason = calculate_dynamic_composite_match(
+                user_prompt=user_prompt,
+                canonical=canonical,
+                product=p,
+                raw_text_score=0.5,
+                vqa_data=fallback_vqa_results.get(p.id),
+                target_char_key=target_char_key,
+                target_char_terms=target_char_terms
+            )
+            ev = ProductRelevanceEvaluation(
                 product_id=p.id,
                 product_title=p.title,
-                is_relevant=True,
-                match_score=0.6,
-                reason="LLM unavailable — passed attribute pre-filters",
-            ))
-        return candidates, evaluations
+                is_relevant=is_relevant,
+                match_score=final_score,
+                reason=reason,
+            )
+            evaluations.append(ev)
+            if is_relevant and final_score >= 0.45:
+                accepted.append(p)
+
+        if not accepted:
+            # If all were below threshold, take top 4 highest scoring candidates
+            candidates_sorted = sorted(
+                candidates,
+                key=candidate_sort_key,
+                reverse=True
+            )
+            accepted = candidates_sorted[:min(4, len(candidates_sorted))]
+        else:
+            accepted.sort(key=candidate_sort_key, reverse=True)
+
+        return accepted, evaluations
 
     def compare_products(self, products: List[Product]) -> Optional['ProductComparison']:
         """Stage 4: LLM-powered detailed comparison matrix for selected items."""

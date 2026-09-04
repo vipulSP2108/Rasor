@@ -12,16 +12,28 @@ import toast from 'react-hot-toast'
 
 const SESSION_ID = 'rasor-stylist'
 
+const DEFAULT_OPTIONS = [
+  "Show me men's t-shirts",
+  "Marvel fan merch",
+  "Skin tone 5",
+  "Something for the gym",
+  "Surprise me 🎲"
+]
+
 const INITIAL_MESSAGES = [
   {
     role: 'assistant',
     content: "Welcome to **Rasor**! I'm your AI personal stylist. 🛍️ Tell me what you're looking for — I'll ask just a few smart questions or evaluate your skin tone to find the perfect match for you.",
-    suggestedOptions: ['Show me men\'s t-shirts', 'Marvel fan merch', 'Skin tone 5', 'Something for the gym', 'Surprise me 🎲'],
+    suggestedOptions: DEFAULT_OPTIONS,
   }
 ]
 
 export default function ChatInterface({ onAddToCart, onAutonomousCheckout }) {
-  const { config, chatMessages, setChatMessages, clearChatMessages, addHistoryRecord, setCandidateBuffer, addToCartLocal, clearCart, userProfile } = useApp()
+  const { 
+    config, chatMessages, setChatMessages, clearChatMessages, 
+    addHistoryRecord, setCandidateBuffer, candidateBuffer, 
+    cart, removeFromCart, addToCartLocal, clearCart, userProfile 
+  } = useApp()
   const [input, setInput] = useState('')
   const [isThinking, setIsThinking] = useState(false)
   const [isSearching, setIsSearching] = useState(false)
@@ -38,6 +50,14 @@ export default function ChatInterface({ onAddToCart, onAutonomousCheckout }) {
   const inputRef = useRef(null)
   const carouselsRef = useRef({})
   const lastCuratedPicksRef = useRef([])
+
+  // Track latest assistant message index so options chips stay visible
+  const latestAssistantIdx = React.useMemo(() => {
+    for (let i = chatMessages.length - 1; i >= 0; i--) {
+      if (chatMessages[i].role === 'assistant') return i
+    }
+    return -1
+  }, [chatMessages])
 
   // Keep lastCuratedPicksRef in sync with most recent products in chat history
   useEffect(() => {
@@ -86,6 +106,56 @@ export default function ChatInterface({ onAddToCart, onAutonomousCheckout }) {
     setChatMessages(prev => [...prev, { role: 'user', content: userText }])
     setIsThinking(true)
 
+    // ── Zero-Latency Runner-Up Buffer Interception (0 Model Calls, 0 Network Latency) ──
+    const isRunnerUpCommand = /\b(runner-?up|fallback|substitute|next\s*(?:pick|one|item|option|candidate)|swap\s*(?:with|to|for|item)?|replace\s*(?:with|it|this)?|take\s*(?:next|runner-?up|fallback))\b/i.test(userText)
+
+    if (isRunnerUpCommand && candidateBuffer && candidateBuffer.length > 0) {
+      const currentProducts = Object.entries(cart?.items || {}).map(([id, qty]) => ({ ...cart?.products?.[id], qty })).filter(p => p.id)
+      const currentItem = currentProducts[0]
+      const availableCandidates = candidateBuffer.filter(cand => !cart?.items?.[cand.id])
+      const chosenCandidate = availableCandidates[0] || candidateBuffer[0]
+
+      if (chosenCandidate) {
+        if (currentItem) {
+          removeFromCart(currentItem.id)
+        }
+        addToCartLocal(chosenCandidate, 1)
+
+        const isBuyIntent = /\b(buy|order|purchase|checkout|pay)\b/i.test(userText)
+        const curr = config.currency === 'INR' ? '₹' : '$'
+        const swapMsg = {
+          role: 'assistant',
+          content: `⚡ **Zero-Latency Cache Swap:** ${currentItem ? `Replaced **${currentItem.title}** with` : 'Loaded'} pre-fetched runner-up **${chosenCandidate.title}** (${curr}${chosenCandidate.price}) directly from local memory buffer with **0 model calls & 0ms latency**!`,
+          suggestedOptions: [
+            '🛒 Buy Runner-Up Now',
+            '🔄 Next Runner-Up',
+            'Show all picks',
+            'Surprise me 🎲'
+          ],
+          voiceEnabled: config.voiceEnabled && (voiceChannels?.inventoryOos ?? true),
+        }
+
+        setChatMessages(prev => [...prev, swapMsg])
+        toast.success(`⚡ Substituted with "${chosenCandidate.title.slice(0, 18)}..." from cache!`, { icon: '🔄' })
+
+        if (swapMsg.voiceEnabled) {
+          setSpeakingIdx(chatMessages.length + 1)
+          await speakAsync(`Swapped with runner up ${chosenCandidate.title} from local cache with zero latency.`, { category: 'inventoryOos' })
+          setSpeakingIdx(null)
+        }
+
+        if (isBuyIntent) {
+          toast('Initiating autonomous checkout with runner-up...', { icon: '🚀' })
+          setTimeout(() => {
+            onAutonomousCheckout?.({ mode: 'cascade_failover', autoStart: true })
+          }, 300)
+        }
+
+        setIsThinking(false)
+        return // Return directly: NEVER RUN THE MODEL!
+      }
+    }
+
     try {
       const history = chatMessages.map(m => ({ role: m.role, content: m.content }))
       const { data } = await chatMessage({
@@ -102,7 +172,9 @@ export default function ChatInterface({ onAddToCart, onAutonomousCheckout }) {
       const assistantMsg = {
         role: 'assistant',
         content: data.message,
-        suggestedOptions: data.suggested_options || [],
+        suggestedOptions: (data.suggested_options && data.suggested_options.length > 0)
+          ? data.suggested_options
+          : [],
         voiceEnabled: isVoiceActive,
       }
 
@@ -136,7 +208,7 @@ export default function ChatInterface({ onAddToCart, onAutonomousCheckout }) {
             max_deep_fetches: config.maxDeepFetches,
             enable_vqa_scanner: config.enableVqaScanner,
             vqa_strict_filter: config.vqaStrictFilter,
-            vqa_limit: config.vqaLimit ?? 8,
+            vqa_limit: config.vqaLimit ?? 16,
             truth_hierarchy: config.truthHierarchy,
             enable_semantic_engine: config.enableSemanticEngine,
             currency: config.currency,
@@ -149,11 +221,23 @@ export default function ChatInterface({ onAddToCart, onAutonomousCheckout }) {
             if (prods.length > 1) {
               setCandidateBuffer(prods.slice(1, 6))
             }
+            const dynamicShelfOptions = (data.suggested_options && data.suggested_options.length > 0)
+              ? data.suggested_options
+              : [
+                  '🛒 Buy Top Pick (#1)',
+                  '🛒 Buy Top 2',
+                  '🔄 Swap with Runner-Up',
+                  'Oversized Fit',
+                  'Under ₹1000',
+                  'Surprise me 🎲'
+                ]
+
             setChatMessages(prev => [...prev, {
               role: 'assistant',
               content: `✨ Found **${prods.length}** curated picks matching your style! Browse them below:`,
               products: prods,
               querySummary: data.updated_query,
+              suggestedOptions: dynamicShelfOptions,
               voiceEnabled: false, // Default shelf announcement to silent to avoid speech collision; toggleable by user
             }])
             // Save lightweight history record
@@ -167,6 +251,12 @@ export default function ChatInterface({ onAddToCart, onAutonomousCheckout }) {
             setChatMessages(prev => [...prev, {
               role: 'assistant',
               content: "Hmm, I couldn't find products matching those exact criteria. Want to try a different description or fit?",
+              suggestedOptions: [
+                "Show me men's t-shirts",
+                "Black oversized t-shirt",
+                "Marvel graphic tee",
+                "Surprise me 🎲"
+              ],
               voiceEnabled: isVoiceActive,
             }])
           }
@@ -226,7 +316,11 @@ export default function ChatInterface({ onAddToCart, onAutonomousCheckout }) {
       }
     } catch (err) {
       toast.error('Chat error: ' + (err.response?.data?.detail || err.message))
-      setChatMessages(prev => [...prev, { role: 'assistant', content: "Sorry, I ran into an issue connecting to the AI. Could you try again?" }])
+      setChatMessages(prev => [...prev, { 
+        role: 'assistant', 
+        content: "Sorry, I ran into an issue connecting to the AI. Could you try again?",
+        suggestedOptions: DEFAULT_OPTIONS
+      }])
     } finally {
       setIsThinking(false)
     }
@@ -435,9 +529,9 @@ export default function ChatInterface({ onAddToCart, onAutonomousCheckout }) {
                 </div>
               )}
 
-              {/* Quick Reply Chips */}
-              {msg.suggestedOptions?.length > 0 && i === chatMessages.length - 1 && (
-                <div className="chat-chips">
+              {/* Quick Reply Chips in Conversation */}
+              {msg.suggestedOptions?.length > 0 && (i === latestAssistantIdx || i === chatMessages.length - 1) && (
+                <div className="chat-chips animate-slide-up">
                   {msg.suggestedOptions.map((opt, j) => (
                     <button key={j} className="chat-chip" onClick={() => handleChipClick(opt)}>
                       <Sparkles size={12} style={{ opacity: 0.7 }} />

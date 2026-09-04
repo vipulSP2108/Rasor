@@ -329,8 +329,13 @@ export default function CartDrawer({ onClose, autoStartCascade = false, onResetA
                 </div>
 
                 {/* Pre-Fetched Runner-Up Item Preview(s) - Shows ALL selected candidates */}
-                <div style={{ fontSize: '0.7rem', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 5 }}>
-                  Runner-Up Queue ({previewCandidates.length} displayed of {maxCached} cached):
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
+                  <span style={{ fontSize: '0.7rem', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                    Runner-Up Queue ({previewCandidates.length} displayed of {maxCached} cached):
+                  </span>
+                  <span className="badge badge-green" style={{ fontSize: '0.62rem', padding: '1px 6px' }}>
+                    ⚡ 0 Model Calls (Cached)
+                  </span>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: '220px', overflowY: 'auto' }}>
                   {previewCandidates.map((cand, idx) => (
@@ -352,9 +357,36 @@ export default function CartDrawer({ onClose, autoStartCascade = false, onResetA
                           {curr}{cand?.price} · {cand?.merchant || 'Rasor'} (Size {userProfile?.defaultSize || 'XL'} Ready)
                         </div>
                       </div>
-                      <span className="badge badge-purple" style={{ fontSize: '0.64rem', padding: '2px 6px', whiteSpace: 'nowrap' }}>
-                        Fallback #{idx + 1}
-                      </span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span className="badge badge-purple" style={{ fontSize: '0.64rem', padding: '2px 6px', whiteSpace: 'nowrap' }}>
+                          Fallback #{idx + 1}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            handleSubstituteItem(cartProducts[0], cand)
+                          }}
+                          style={{
+                            background: 'rgba(99, 102, 241, 0.25)',
+                            border: '1px solid rgba(99, 102, 241, 0.45)',
+                            borderRadius: 4,
+                            padding: '2px 6px',
+                            color: '#e0e7ff',
+                            fontSize: '0.65rem',
+                            fontWeight: 700,
+                            cursor: 'pointer',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 3,
+                            whiteSpace: 'nowrap',
+                            transition: 'all 0.2s ease'
+                          }}
+                          title="Instant swap with cached candidate (0ms, 0 model calls)"
+                        >
+                          <RefreshCw size={9} /> Swap
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>

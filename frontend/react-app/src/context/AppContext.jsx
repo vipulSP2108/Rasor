@@ -14,7 +14,7 @@ const DEFAULT_CONFIG = {
   maxDeepFetches: 10,
   enableVqaScanner: false,
   vqaStrictFilter: true,
-  vqaLimit: 8,
+  vqaLimit: 16,
   truthHierarchy: true,
   enableOfferEngine: true,
   enableSemanticEngine: true,
@@ -102,6 +102,59 @@ const saveSessionJson = (key, val) => {
   } catch (e) { }
 }
 
+// ── Lightweight Storage Pruning (95% memory reduction) ───────────────
+export const trimProductForStorage = (p) => {
+  if (!p || typeof p !== 'object') return p
+  return {
+    id: p.id,
+    title: p.title,
+    price: p.price,
+    merchant: p.merchant || 'Rasor',
+    rating: p.rating,
+    category: p.category,
+    specs: {
+      display_image: p.specs?.display_image || p.specs?.image_url,
+      image_url: p.specs?.image_url || p.specs?.display_image,
+      variant_ids: p.specs?.variant_ids,
+    }
+  }
+}
+
+export const getStorageUsage = () => {
+  let localBytes = 0
+  let sessionBytes = 0
+  const localKeys = {}
+  const sessionKeys = {}
+
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i)
+      const v = localStorage.getItem(k) || ''
+      const size = (k.length + v.length) * 2
+      localBytes += size
+      localKeys[k] = (size / 1024).toFixed(1) + ' KB'
+    }
+  } catch (e) {}
+
+  try {
+    for (let i = 0; i < sessionStorage.length; i++) {
+      const k = sessionStorage.key(i)
+      const v = sessionStorage.getItem(k) || ''
+      const size = (k.length + v.length) * 2
+      sessionBytes += size
+      sessionKeys[k] = (size / 1024).toFixed(1) + ' KB'
+    }
+  } catch (e) {}
+
+  return {
+    localKb: (localBytes / 1024).toFixed(1),
+    sessionKb: (sessionBytes / 1024).toFixed(1),
+    totalKb: ((localBytes + sessionBytes) / 1024).toFixed(1),
+    localKeys,
+    sessionKeys,
+  }
+}
+
 export function extractQueryMetadata(queryStr = '', canonical = {}, config = {}) {
   const q = (queryStr || '').toLowerCase()
   const c = canonical || {}
@@ -134,8 +187,8 @@ export function extractQueryMetadata(queryStr = '', canonical = {}, config = {})
   // 🎨 Color
   let color = c.color || 'Any'
   if (color === 'Any') {
-    const colors = ['black', 'white', 'blue', 'green', 'red', 'yellow', 'taupe', 'brown', 'beige', 'olive', 'pink', 'purple', 'multicolor', 'grey', 'gray']
-    for (const clr of colors) {
+    const commonColors = ['black', 'white', 'blue', 'green', 'red', 'yellow', 'taupe', 'brown', 'beige', 'olive', 'pink', 'purple', 'multicolor', 'grey', 'gray']
+    for (const clr of commonColors) {
       if (new RegExp(`\\b${clr}\\b`).test(q)) {
         color = clr.charAt(0).toUpperCase() + clr.slice(1)
         break
@@ -143,7 +196,7 @@ export function extractQueryMetadata(queryStr = '', canonical = {}, config = {})
     }
   }
 
-  // 🎨 Design Pattern
+  // ⚡ Design
   let design = c.design || 'Any'
   if (design === 'Any') {
     if (/\b(graphic|printed|print|marvel|panther|anime)\b/.test(q)) design = 'Graphic Print'
@@ -152,7 +205,7 @@ export function extractQueryMetadata(queryStr = '', canonical = {}, config = {})
     else if (/\b(textured)\b/.test(q)) design = 'Textured'
   }
 
-  // Theme / Fandom / Character
+  // 🦸 Fandom
   let fandom = c.fandom || null
   if (!fandom) {
     if (/\b(iron man|ironman)\b/.test(q)) fandom = 'Marvel (Iron Man)'
@@ -165,7 +218,7 @@ export function extractQueryMetadata(queryStr = '', canonical = {}, config = {})
     else if (/\b(mickey|disney|donald duck)\b/.test(q)) fandom = 'Disney'
   }
 
-  // Sleeve
+  // 🧵 Sleeve
   let sleeve = c.sleeve || 'Any'
   if (sleeve === 'Any') {
     if (/\b(half sleeve|short sleeve)\b/.test(q)) sleeve = 'Half Sleeve'
@@ -178,7 +231,7 @@ export function extractQueryMetadata(queryStr = '', canonical = {}, config = {})
   const sizeMatch = q.match(/\b(3xl|2xl|xxl|xl|xs|s|m|l)\b/i)
   if (sizeMatch) size = sizeMatch[1].toUpperCase()
 
-  // 👕 Fit
+  // 📐 Fit
   let fit = c.fit || 'Any'
   if (fit === 'Any') {
     if (/\b(oversized|baggy|loose)\b/.test(q)) fit = 'Oversized'
@@ -186,10 +239,21 @@ export function extractQueryMetadata(queryStr = '', canonical = {}, config = {})
     else if (/\b(regular|classic)\b/.test(q)) fit = 'Regular'
   }
 
-  // 💰 Budget Cap
+  // 💰 Budget
   const budgetCap = config.maxBudget ? `₹${config.maxBudget}` : 'No Cap'
 
-  return { gender, category, fandom, occasion, color, design, size, fit, sleeve, budgetCap }
+  return {
+    gender,
+    category,
+    fandom,
+    occasion,
+    color,
+    design,
+    size,
+    fit,
+    sleeve,
+    budgetCap
+  }
 }
 
 const DEFAULT_CART = {
@@ -198,14 +262,22 @@ const DEFAULT_CART = {
   checkoutUrl: null,
   quantity: 0,
   total: 0,
-  items: {},        // { productId: qty }
+  items: {},        // { productId: quantity }
   products: {},     // { productId: Product }
 }
 
 export function AppProvider({ children }) {
   const [config, setConfig] = useState(() => {
     const saved = loadLocalJson('rasor_config_state', null)
-    return saved ? { ...DEFAULT_CONFIG, ...saved } : DEFAULT_CONFIG
+    if (saved) {
+      const merged = { ...DEFAULT_CONFIG, ...saved }
+      // Auto-migrate legacy 8 limit to 16
+      if (saved.vqaLimit === 8 || !saved.vqaLimit) {
+        merged.vqaLimit = 16
+      }
+      return merged
+    }
+    return DEFAULT_CONFIG
   })
 
   // Auto-persist config so demoMode and all settings stay preserved across refreshes
@@ -375,7 +447,14 @@ export function AppProvider({ children }) {
     setProductCache(prev => {
       const next = { ...prev }
       for (const p of prods) {
-        if (p && p.id) next[p.id] = p
+        if (p && p.id) next[p.id] = trimProductForStorage(p)
+      }
+      // Cap in-memory cache to 40 items to avoid memory bloat
+      const keys = Object.keys(next)
+      if (keys.length > 40) {
+        for (let i = 0; i < keys.length - 40; i++) {
+          delete next[keys[i]]
+        }
       }
       saveSessionJson('rasor_product_cache', next)
       return next
@@ -439,7 +518,7 @@ export function AppProvider({ children }) {
           .map(p => p.specs?.display_image || p.specs?.image_url)
           .filter(Boolean),
       }
-      const next = [record, ...filtered].slice(0, 40) // Keep latest 40 searches
+      const next = [record, ...filtered].slice(0, 25) // Keep latest 25 searches
       saveLocalJson('rasor_persistent_history', next)
       return next
     })
@@ -464,7 +543,17 @@ export function AppProvider({ children }) {
   const setChatMessages = useCallback((updater) => {
     setChatMessagesState(prev => {
       const next = typeof updater === 'function' ? updater(prev) : updater
-      saveSessionJson('rasor_chat_messages', next)
+      // Sanitize products inside messages before serializing to storage
+      const trimmed = (next || []).map(m => {
+        if (m.products && Array.isArray(m.products)) {
+          return {
+            ...m,
+            products: m.products.map(trimProductForStorage)
+          }
+        }
+        return m
+      })
+      saveSessionJson('rasor_chat_messages', trimmed)
       return next
     })
   }, [])
@@ -568,7 +657,16 @@ const DEFAULT_CANDIDATE_BUFFER = [
   const setSearchState = useCallback((patch) => {
     setSearchStateInternal(prev => {
       const next = typeof patch === 'function' ? patch(prev) : { ...prev, ...patch }
-      saveSessionJson('rasor_search_state', next)
+      // Prune heavy discardedProducts and strip full HTML/specs before writing to storage
+      const sanitized = {
+        query: next.query,
+        results: (next.results || []).slice(0, 24).map(trimProductForStorage),
+        discardedProducts: [], // Kept in memory only; pruned from storage
+        evaluations: [],
+        canonicalQuery: next.canonicalQuery,
+        status: next.status,
+      }
+      saveSessionJson('rasor_search_state', sanitized)
       if (next.results && next.results.length > 1) {
         setCandidateBuffer(next.results.slice(1, 6))
       }
@@ -585,17 +683,32 @@ const DEFAULT_CANDIDATE_BUFFER = [
         id: Date.now(),
         query: snapshot.query,
         resultsCount: (snapshot.results || []).length,
-        results: snapshot.results || [],
-        discardedProducts: snapshot.discardedProducts || [],
-        evaluations: snapshot.evaluations || [],
+        results: (snapshot.results || []).slice(0, 8).map(trimProductForStorage),
         canonicalQuery: snapshot.canonicalQuery,
         status: snapshot.status,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       }
-      const next = [item, ...filtered].slice(0, 8)
+      const next = [item, ...filtered].slice(0, 4) // Keep latest 4 searches max
       saveSessionJson('rasor_search_history', next)
       return next
     })
+  }, [])
+
+  const clearStorageCaches = useCallback(() => {
+    try {
+      sessionStorage.removeItem('rasor_product_cache')
+      sessionStorage.removeItem('rasor_search_state')
+      sessionStorage.removeItem('rasor_search_history')
+      sessionStorage.removeItem('rasor_candidate_buffer')
+      sessionStorage.removeItem('rasor_chat_messages')
+      localStorage.removeItem('rasor_persistent_history')
+      localStorage.removeItem('rasor_compare_ids')
+      setProductCache({})
+      setSearchHistory([])
+      setHistoryRecords([])
+      setChatMessagesState(INITIAL_CHAT_MESSAGES)
+      setSearchStateInternal(INITIAL_SEARCH_STATE)
+    } catch (e) {}
   }, [])
 
   const restoreSearchSnapshot = useCallback((snapshotId) => {
@@ -782,6 +895,7 @@ const DEFAULT_CANDIDATE_BUFFER = [
       simulatedOosRemaining, setSimulatedOosRemaining,
       simulatePostPaymentOos, setSimulatePostPaymentOos,
       postPaymentRefundData, setPostPaymentRefundData,
+      clearStorageCaches,
     }}>
       {children}
     </AppContext.Provider>

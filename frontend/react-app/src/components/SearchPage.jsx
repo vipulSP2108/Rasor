@@ -215,7 +215,7 @@ export default function SearchPage({ onAddToCart, onAutonomousCheckout }) {
         max_deep_fetches: config.maxDeepFetches,
         enable_vqa_scanner: config.enableVqaScanner,
         vqa_strict_filter: config.vqaStrictFilter,
-        vqa_limit: config.vqaLimit ?? 8,
+        vqa_limit: config.vqaLimit ?? 16,
         truth_hierarchy: config.truthHierarchy,
         enable_semantic_engine: config.enableSemanticEngine,
         currency: config.currency,

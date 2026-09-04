@@ -1,7 +1,6 @@
-import React from 'react'
-import { useState, useEffect } from 'react'
-import { Key, ShieldCheck, PlusCircle, CheckCircle2, AlertCircle, Trash2 } from 'lucide-react'
-import { useApp } from '../context/AppContext'
+import React, { useState, useEffect } from 'react'
+import { Key, ShieldCheck, PlusCircle, CheckCircle2, AlertCircle, Trash2, Database, Activity } from 'lucide-react'
+import { useApp, getStorageUsage } from '../context/AppContext'
 import { useVoice } from '../hooks/useVoice'
 import { bulkCancelPaymentLinks, cleanStaleRescueLinks } from '../api/client'
 import toast from 'react-hot-toast'
@@ -68,12 +67,22 @@ export default function SettingsPanel() {
     saveMandateToken,
     clearMandateToken,
     userProfile,
-    updateUserProfile
+    updateUserProfile,
+    clearStorageCaches
   } = useApp()
 
   const { voices, speak, voiceChannels, setVoiceChannel } = useVoice()
   const curr = config.currency === 'INR' ? '₹' : '$'
   const [isDeletingLinks, setIsDeletingLinks] = useState(false)
+  const [storageInfo, setStorageInfo] = useState(() => getStorageUsage())
+
+  const refreshStorage = () => {
+    setStorageInfo(getStorageUsage())
+  }
+
+  useEffect(() => {
+    refreshStorage()
+  }, [])
 
   const handleDeletePaymentLinks = async () => {
     setIsDeletingLinks(true)
@@ -245,7 +254,7 @@ export default function SettingsPanel() {
       </Section>
 
       {/* ── Mobile Rescue & Anti-Spam Controls ── */}
-      <Section icon="📱" title="Mobile Rescue & Anti-Spam Notification Controls">
+      {/* <Section icon="📱" title="Mobile Rescue & Anti-Spam Notification Controls">
         <Row
           label="Send Real SMS via Razorpay"
           hint="Dispatches carrier SMS with payment link to handset. Turn OFF during testing to prevent SMS spam."
@@ -264,7 +273,7 @@ export default function SettingsPanel() {
             onChange={v => updateUserProfile({ enableWhatsappRescue: v })}
           />
         </Row>
-      </Section>
+      </Section> */}
 
       {/* ── Delete Payment Links (Razorpay Test Mode Cleanup) ── */}
       <Section icon={<Trash2 size={18} color="#f87171" />} title="Payment Links Quota & Cleanup">
@@ -299,26 +308,6 @@ export default function SettingsPanel() {
         </div>
       </Section>
 
-      {/* ── Customer Details ── */}
-      <Section icon="👤" title="Customer Details & Delivery Location">
-        <Row label="Shopify Account Email" hint="Orders will be synced under this account">
-          <input
-            className="input"
-            value={config.customerEmail}
-            onChange={e => updateConfig({ customerEmail: e.target.value })}
-            style={{ minWidth: 260 }}
-          />
-        </Row>
-        <Row label="Default Delivery Location" hint="Used for delivery distance calculations & warehouse routing">
-          <input
-            className="input"
-            value={config.userLocation || ''}
-            placeholder="e.g. 424001, Mumbai, Delhi"
-            onChange={e => updateConfig({ userLocation: e.target.value })}
-            style={{ minWidth: 260 }}
-          />
-        </Row>
-      </Section>
 
       {/* ── Execution & Data Source ── */}
       <Section icon="🗄️" title="Execution Mode & Data Source">
@@ -395,6 +384,84 @@ export default function SettingsPanel() {
         </div>
       </Section>
 
+      {/* ── Storage & Latency Health Diagnostics ── */}
+      <Section icon={<Database size={18} color="#38bdf8" />} title="Storage & Latency Health Diagnostics">
+        <div style={{ padding: '14px', background: 'rgba(56, 189, 248, 0.06)', borderRadius: 8, border: '1px solid rgba(56, 189, 248, 0.2)', marginBottom: 14 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+            <span style={{ fontSize: '0.86rem', fontWeight: 700, color: '#e0f2fe', display: 'flex', alignItems: 'center', gap: 6 }}>
+              <Activity size={15} color="#38bdf8" /> Real-Time Storage Footprint
+            </span>
+            <span className="badge badge-purple" style={{ fontSize: '0.74rem' }}>
+              Total Storage: {storageInfo.totalKb} KB
+            </span>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, fontSize: '0.76rem', color: '#94a3b8', marginBottom: 14 }}>
+            <div style={{ background: 'rgba(0,0,0,0.3)', padding: '10px 12px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.06)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                <strong style={{ color: '#bae6fd' }}>Local Storage:</strong>
+                <span style={{ color: '#38bdf8', fontWeight: 700 }}>{storageInfo.localKb} KB</span>
+              </div>
+              <div style={{ maxHeight: 90, overflowY: 'auto', fontSize: '0.7rem' }}>
+                {Object.keys(storageInfo.localKeys || {}).length === 0 ? (
+                  <span style={{ color: 'var(--text-muted)' }}>No local storage keys</span>
+                ) : (
+                  Object.entries(storageInfo.localKeys || {}).map(([k, sz]) => (
+                    <div key={k} style={{ display: 'flex', justifyContent: 'space-between', padding: '1px 0', borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '70%' }}>{k}</span>
+                      <span style={{ color: '#93c5fd' }}>{sz}</span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            <div style={{ background: 'rgba(0,0,0,0.3)', padding: '10px 12px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.06)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                <strong style={{ color: '#bae6fd' }}>Session Storage:</strong>
+                <span style={{ color: '#38bdf8', fontWeight: 700 }}>{storageInfo.sessionKb} KB</span>
+              </div>
+              <div style={{ maxHeight: 90, overflowY: 'auto', fontSize: '0.7rem' }}>
+                {Object.keys(storageInfo.sessionKeys || {}).length === 0 ? (
+                  <span style={{ color: 'var(--text-muted)' }}>No session storage keys</span>
+                ) : (
+                  Object.entries(storageInfo.sessionKeys || {}).map(([k, sz]) => (
+                    <div key={k} style={{ display: 'flex', justifyContent: 'space-between', padding: '1px 0', borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '70%' }}>{k}</span>
+                      <span style={{ color: '#93c5fd' }}>{sz}</span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            className="btn btn-sm btn-full"
+            style={{
+              background: 'linear-gradient(135deg, rgba(239, 68, 68, 0.2), rgba(245, 158, 11, 0.2))',
+              border: '1px solid #ef4444',
+              color: '#fca5a5',
+              fontWeight: 700,
+              fontSize: '0.78rem',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 6,
+              padding: '8px 12px'
+            }}
+            onClick={() => {
+              clearStorageCaches()
+              refreshStorage()
+              toast.success('🧹 Caches Purged! Storage footprint reduced & latency reset.', { icon: '⚡' })
+            }}
+          >
+            <Trash2 size={13} /> Purge Heavy Search & Product Caches (Restore Peak Latency)
+          </button>
+        </div>
+      </Section>
+
       {/* ── Search & Enrichment ── */}
       <Section icon="🔍" title="Search & Multi-Tier AI Filtering">
         <Row label="Max Results" hint="Maximum number of products displayed in results">
@@ -424,9 +491,9 @@ export default function SettingsPanel() {
         </Row>
         <Row label="VQA Scan Limit" hint="Max products sent to VQA vision — higher = more accurate but slower & costlier">
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 200 }}>
-            <input type="range" className="range-input" min={1} max={20}
-              value={config.vqaLimit ?? 8} onChange={e => updateConfig({ vqaLimit: +e.target.value })} />
-            <span className="text-sm text-muted">{config.vqaLimit ?? 8} products scanned by Vision</span>
+            <input type="range" className="range-input" min={1} max={30}
+              value={config.vqaLimit ?? 16} onChange={e => updateConfig({ vqaLimit: +e.target.value })} />
+            <span className="text-sm text-muted">{config.vqaLimit ?? 16} products scanned by Vision</span>
           </div>
         </Row>
         <Row label="Strict VQA Filtering" hint="Only scan products that pass text constraints first">
