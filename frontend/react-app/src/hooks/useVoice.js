@@ -1,11 +1,38 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 
+const DEFAULT_VOICE_CHANNELS = {
+  aiChat: true,          // AI Stylist recommendations and conversational responses
+  inventoryOos: true,    // Pre-check out-of-stock and runner-up substitution alerts
+  failoverRails: true,   // Multi-rail bank decline and failover guidance
+  postRefund: true       // Post-payment collision and instant refund alerts
+};
+
+const loadVoiceChannels = () => {
+  try {
+    const raw = localStorage.getItem('rasor_voice_channels');
+    return raw ? { ...DEFAULT_VOICE_CHANNELS, ...JSON.parse(raw) } : DEFAULT_VOICE_CHANNELS;
+  } catch (e) {
+    return DEFAULT_VOICE_CHANNELS;
+  }
+};
+
 export function useVoice() {
   const [voices, setVoices] = useState([]);
   const [isListening, setIsListening] = useState(false);
   const [transcript, setTranscript] = useState('');
+  const [voiceChannels, setVoiceChannelsState] = useState(loadVoiceChannels);
   const recognitionRef = useRef(null);
   const silenceTimeoutRef = useRef(null);
+
+  const setVoiceChannel = useCallback((channelKey, enabled) => {
+    setVoiceChannelsState(prev => {
+      const next = { ...prev, [channelKey]: !!enabled };
+      try {
+        localStorage.setItem('rasor_voice_channels', JSON.stringify(next));
+      } catch (e) {}
+      return next;
+    });
+  }, []);
 
   // Initialize Speech Synthesis Voices
   useEffect(() => {
@@ -27,8 +54,8 @@ export function useVoice() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (SpeechRecognition) {
       const recognition = new SpeechRecognition();
-      recognition.continuous = true; // Keep listening until we stop it
-      recognition.interimResults = true; // Give live feedback
+      recognition.continuous = true;
+      recognition.interimResults = true;
       recognition.lang = 'en-US';
 
       recognition.onresult = (event) => {
@@ -46,7 +73,6 @@ export function useVoice() {
         const latestTranscript = (finalTranscript + interimTranscript).trim();
         setTranscript(latestTranscript);
 
-        // Reset the silence timer: 2.5 seconds of silence after speaking completes the input
         if (latestTranscript.trim()) {
           if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
           silenceTimeoutRef.current = setTimeout(() => {
@@ -76,7 +102,7 @@ export function useVoice() {
     
     return () => {
       if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
-    }
+    };
   }, []);
 
   const stopListening = useCallback(() => {
@@ -90,22 +116,18 @@ export function useVoice() {
   }, []);
 
   const startListening = useCallback(() => {
-    // Don't listen if speech synthesis is currently speaking
     if (window.speechSynthesis && window.speechSynthesis.speaking) {
       return;
     }
     if (recognitionRef.current) {
-      setTranscript(''); // Clear previous transcript
+      setTranscript('');
       if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
       
       try {
         recognitionRef.current.start();
         setIsListening(true);
-      } catch (e) {
-        // Recognition may already be running
-      }
+      } catch (e) {}
 
-      // Initial 8-second silence timeout: if no one speaks, automatically turn off listening
       silenceTimeoutRef.current = setTimeout(() => {
         stopListening();
       }, 8000);
@@ -114,45 +136,83 @@ export function useVoice() {
     }
   }, [stopListening]);
 
-  const speak = useCallback((text, voiceURI = null, onEnd = null) => {
-    if (!window.speechSynthesis || !text) return;
-
-    // Cancel any ongoing speech
-    window.speechSynthesis.cancel();
-
-    // Strip emojis, markdown, and unwanted symbols so TTS doesn't speak emoji names aloud
-    const cleanText = text
-      .replace(/\*\*(.*?)\*\*/g, '$1')
-      .replace(/\*(.*?)\*/g, '$1')
-      .replace(/[\u{1F300}-\u{1F9FF}\u{1F600}-\u{1F64F}\u{1F680}-\u{1F6FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1FA70}-\u{1FAFF}\u{1F900}-\u{1F9FF}\u{1F000}-\u{1F02F}\u{1F0A0}-\u{1F0FF}\u{1F100}-\u{1F64F}\u{1F680}-\u{1F6FF}\u{1F1E6}-\u{1F1FF}]/gu, '')
-      .replace(/https?:\/\/\S+/g, '')
-      .replace(/[#_~`]/g, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-
-    if (!cleanText) {
-      if (onEnd) onEnd();
-      return;
-    }
-
-    const utterance = new SpeechSynthesisUtterance(cleanText);
-    
-    if (voiceURI && voices.length > 0) {
-      const selectedVoice = voices.find(v => v.voiceURI === voiceURI);
-      if (selectedVoice) {
-        utterance.voice = selectedVoice;
+  // Promise-based speak function: waits for utterance to finish cleanly
+  const speakAsync = useCallback((text, options = {}) => {
+    return new Promise((resolve) => {
+      if (!window.speechSynthesis || !text) {
+        resolve();
+        return;
       }
-    }
-    
-    utterance.onend = () => {
-      if (onEnd) onEnd();
-    };
-    utterance.onerror = () => {
-      if (onEnd) onEnd();
-    };
 
-    window.speechSynthesis.speak(utterance);
+      const opts = typeof options === 'string' ? { voiceURI: options } : (options || {});
+      const { category = null, voiceURI = null, interrupt = false } = opts;
+
+      // Check if specific voice category is disabled by the user
+      const currentChannels = loadVoiceChannels();
+      if (category && currentChannels[category] === false) {
+        resolve();
+        return;
+      }
+
+      if (interrupt) {
+        window.speechSynthesis.cancel();
+      }
+
+      // Clean text of emojis, markdown, and urls
+      const cleanText = text
+        .replace(/\*\*(.*?)\*\*/g, '$1')
+        .replace(/\*(.*?)\*/g, '$1')
+        .replace(/[\u{1F300}-\u{1F9FF}\u{1F600}-\u{1F64F}\u{1F680}-\u{1F6FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1FA70}-\u{1FAFF}\u{1F900}-\u{1F9FF}\u{1F000}-\u{1F02F}\u{1F0A0}-\u{1F0FF}\u{1F100}-\u{1F64F}\u{1F680}-\u{1F6FF}\u{1F1E6}-\u{1F1FF}]/gu, '')
+        .replace(/https?:\/\/\S+/g, '')
+        .replace(/[#_~`]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      if (!cleanText) {
+        resolve();
+        return;
+      }
+
+      const utterance = new SpeechSynthesisUtterance(cleanText);
+      if (voiceURI && voices.length > 0) {
+        const selectedVoice = voices.find(v => v.voiceURI === voiceURI);
+        if (selectedVoice) utterance.voice = selectedVoice;
+      }
+
+      let resolved = false;
+      let safetyTimer = null;
+      const safeResolve = () => {
+        if (!resolved) {
+          resolved = true;
+          if (safetyTimer) clearTimeout(safetyTimer);
+          resolve();
+        }
+      };
+
+      utterance.onend = safeResolve;
+      utterance.onerror = safeResolve;
+
+      // Safety timeout: max 12s, estimated from string length
+      const expectedDurationMs = Math.min(12000, Math.max(1600, cleanText.length * 70));
+      safetyTimer = setTimeout(safeResolve, expectedDurationMs + 400);
+
+      window.speechSynthesis.speak(utterance);
+    });
   }, [voices]);
+
+  const speak = useCallback((text, options = null, onEnd = null) => {
+    let opts = {};
+    if (typeof options === 'string') {
+      opts = { voiceURI: options };
+    } else if (options && typeof options === 'object') {
+      opts = options;
+    }
+    if (onEnd) opts.onEnd = onEnd;
+
+    speakAsync(text, opts).then(() => {
+      if (opts.onEnd) opts.onEnd();
+    });
+  }, [speakAsync]);
 
   const stopSpeaking = useCallback(() => {
     if (window.speechSynthesis) {
@@ -167,7 +227,10 @@ export function useVoice() {
     startListening,
     stopListening,
     speak,
+    speakAsync,
     stopSpeaking,
+    voiceChannels,
+    setVoiceChannel,
     hasRecognitionSupport: !!window.SpeechRecognition || !!window.webkitSpeechRecognition,
     hasSynthesisSupport: !!window.speechSynthesis,
     resetTranscript: () => setTranscript('')
