@@ -1,8 +1,9 @@
 import React from 'react'
 import { useState, useEffect } from 'react'
-import { Key, ShieldCheck, PlusCircle, CheckCircle2, AlertCircle } from 'lucide-react'
+import { Key, ShieldCheck, PlusCircle, CheckCircle2, AlertCircle, Trash2 } from 'lucide-react'
 import { useApp } from '../context/AppContext'
 import { useVoice } from '../hooks/useVoice'
+import { bulkCancelPaymentLinks, cleanStaleRescueLinks } from '../api/client'
 import toast from 'react-hot-toast'
 
 // ── High-Contrast Visible Toggle Component ──────────────────────────
@@ -72,6 +73,35 @@ export default function SettingsPanel() {
 
   const { voices, speak } = useVoice()
   const curr = config.currency === 'INR' ? '₹' : '$'
+  const [isDeletingLinks, setIsDeletingLinks] = useState(false)
+
+  const handleDeletePaymentLinks = async () => {
+    setIsDeletingLinks(true)
+    toast.loading('Scanning Razorpay links & cleaning rescue cache…', { id: 'bulk-cancel' })
+    try {
+      // Step 1: Cancel any still-active Razorpay payment links
+      const { data: cancelData } = await bulkCancelPaymentLinks()
+      // Step 2: Always clean stale local rescue dummy entries (plink_test_*)
+      const { data: cleanData } = await cleanStaleRescueLinks().catch(() => ({ data: { removed_count: 0 } }))
+      const staleRemoved = cleanData?.removed_count ?? 0
+
+      if (cancelData.success) {
+        localStorage.removeItem('rasor_active_plink')
+        localStorage.removeItem('rasor_rescue_module_active')
+        localStorage.removeItem('rasor_cascade_state')
+        toast.success(
+          `🧹 Cleanup Complete: Cancelled ${cancelData.cancelled_count} Razorpay link(s) · Removed ${staleRemoved} stale rescue cache entries (Scanned: ${cancelData.total_scanned})`,
+          { id: 'bulk-cancel', duration: 6000 }
+        )
+      } else {
+        toast.error('Cleanup failed: ' + cancelData.error, { id: 'bulk-cancel' })
+      }
+    } catch (e) {
+      toast.error('Failed to cancel payment links: ' + (e.response?.data?.detail || e.message), { id: 'bulk-cancel' })
+    } finally {
+      setIsDeletingLinks(false)
+    }
+  }
 
 
 
@@ -152,9 +182,9 @@ export default function SettingsPanel() {
               onChange={e => updateMandateLimit(Number(e.target.value))}
               style={{ width: 140, fontSize: '0.85rem' }}
             />
-            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+            {/* <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
               (Tracks max purchase authorized in Demo 1)
-            </span>
+            </span> */}
           </div>
         </Row>
       </Section>
@@ -195,8 +225,8 @@ export default function SettingsPanel() {
             <span className="text-sm text-muted">minutes (min: 15)</span>
           </div>
         </Row>
-        <Row 
-          label="Customer Payment Deadline Safety Buffer (Minutes)" 
+        <Row
+          label="Customer Payment Deadline Safety Buffer (Minutes)"
           hint="Buffer subtracted from link expiry so the customer is asked to complete payment earlier (e.g., 15m expiry - 1m buffer tells customer to complete by 14m before the exact deadline, preventing last-second network lapses)"
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -234,6 +264,39 @@ export default function SettingsPanel() {
             onChange={v => updateUserProfile({ enableWhatsappRescue: v })}
           />
         </Row>
+      </Section>
+
+      {/* ── Delete Payment Links (Razorpay Test Mode Cleanup) ── */}
+      <Section icon={<Trash2 size={18} color="#f87171" />} title="Payment Links Quota & Cleanup">
+        <div style={{ padding: '14px 16px', background: 'rgba(239, 68, 68, 0.08)', borderRadius: 8, border: '1px solid rgba(239, 68, 68, 0.25)', marginBottom: 6 }}>
+          <div style={{ fontSize: '0.86rem', fontWeight: 700, color: '#fca5a5', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Trash2 size={15} /> Razorpay Test Mode Ceiling (30 Links — Cumulative)
+          </div>
+          <p style={{ fontSize: '0.78rem', color: '#cbd5e1', lineHeight: 1.5, margin: '6px 0 10px 0' }}>
+            <strong>Why you see "limit of 30 reached":</strong> Razorpay counts all-time created payment links in test mode — cancelled, expired, and paid links all count. <em>Cancelling them does NOT restore quota.</em> The 30-link ceiling is permanent per test account.
+          </p>
+          <p style={{ fontSize: '0.78rem', color: '#6ee7b7', lineHeight: 1.5, margin: '0 0 10px 0' }}>
+            ⚡ <strong>Already handled automatically:</strong> When the 30-link ceiling is hit, Rasor switches to <strong>Razorpay Orders API</strong> (no 30-link limit). Your QR code and WhatsApp rescue checkout opens a live <code style={{ background: 'rgba(255,255,255,0.08)', padding: '1px 4px', borderRadius: 3 }}>/pay/&#123;order_id&#125;</code> checkout page — fully functional with no restrictions.
+          </p>
+          <p style={{ fontSize: '0.78rem', color: '#fbbf24', lineHeight: 1.5, margin: '0 0 14px 0' }}>
+            🧹 <strong>Use the button below</strong> to: (1) cancel any still-active Razorpay links and (2) remove stale local rescue cache entries that show "no longer active".
+          </p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              className="btn btn-sm"
+              style={{ background: '#ef4444', color: '#fff', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 6, border: 'none', padding: '8px 16px', borderRadius: 6, cursor: 'pointer' }}
+              disabled={isDeletingLinks}
+              onClick={handleDeletePaymentLinks}
+            >
+              {isDeletingLinks ? <span className="spinner" /> : <Trash2 size={14} />}
+              {isDeletingLinks ? 'Cleaning Up...' : 'Bulk-Cancel Active Links & Clean Rescue Cache'}
+            </button>
+            <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+              Cancels active Razorpay links &amp; purges stale local rescue dummy records.
+            </span>
+          </div>
+        </div>
       </Section>
 
       {/* ── Customer Details ── */}

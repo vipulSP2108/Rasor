@@ -20,6 +20,7 @@ function AppShell() {
   const [page, setPage] = useState('home')
   const [tab, setTab] = useState('chat')   // 'chat' | 'search' on home page
   const [cartOpen, setCartOpen] = useState(false)
+  const [autoStartCascade, setAutoStartCascade] = useState(false)
   const [addModal, setAddModal] = useState(null) // Product object or null
   const { addToCartLocal, config, updateConfig } = useApp()
 
@@ -27,6 +28,12 @@ function AppShell() {
   const handleAddConfirmed = (product, qty, shopifyData) => {
     addToCartLocal(product, qty, shopifyData)
     setAddModal(null)
+  }
+
+  const handleAutonomousCheckout = ({ mode = 'cascade_failover', autoStart = true } = {}) => {
+    updateConfig({ demoMode: mode })
+    setAutoStartCascade(autoStart)
+    setCartOpen(true)
   }
 
   const navigate = (p) => {
@@ -70,13 +77,14 @@ function AppShell() {
               </div>
 
               {tab === 'chat'
-                ? <ChatInterface onAddToCart={handleAddToCart} />
-                : <SearchPage onAddToCart={handleAddToCart} />
+                ? <ChatInterface onAddToCart={handleAddToCart} onAutonomousCheckout={handleAutonomousCheckout} />
+                : <SearchPage onAddToCart={handleAddToCart} onAutonomousCheckout={handleAutonomousCheckout} />
               }
             </div>
           )}
 
-          {page === 'chat' && <ChatInterface onAddToCart={handleAddToCart} />}
+          {page === 'chat' && <ChatInterface onAddToCart={handleAddToCart} onAutonomousCheckout={handleAutonomousCheckout} />}
+          {page === 'search' && <SearchPage onAddToCart={handleAddToCart} onAutonomousCheckout={handleAutonomousCheckout} />}
           {page === 'profile' && <ProfilePanel />}
           {page === 'history' && <HistoryPanel onNavigate={navigate} onAddToCart={handleAddToCart} />}
           {page === 'features' && <FeatureShowcase />}
@@ -87,7 +95,16 @@ function AppShell() {
       </div>
 
       {/* Cart Drawer */}
-      {cartOpen && <CartDrawer onClose={() => setCartOpen(false)} />}
+      {cartOpen && (
+        <CartDrawer 
+          onClose={() => {
+            setCartOpen(false)
+            setAutoStartCascade(false)
+          }} 
+          autoStartCascade={autoStartCascade}
+          onResetAutoStartCascade={() => setAutoStartCascade(false)}
+        />
+      )}
 
       {/* Add to Cart Modal */}
       {addModal && (

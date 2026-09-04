@@ -35,7 +35,9 @@ export default function CheckoutSection({
   customerEmail, 
   demoMode, 
   onDemoModeChange, 
-  onSuccess 
+  onSuccess,
+  autoStartCascade = false,
+  onResetAutoStartCascade
 }) {
   const { 
     razorpayToken, 
@@ -618,15 +620,14 @@ export default function CheckoutSection({
           escape: true,
           confirm_close: false,
           ondismiss: () => {
-            if (failedTierRef.current === 1) {
-              failedTierRef.current = null
-              toast('Tier 1 dismissed. Auto-advancing to Tier 2 (Bank of Baroda)...', { icon: '🔄' })
-              setTimeout(() => {
-                runTier2()
-              }, 400)
-            } else {
-              setCascadeStatuses(s => s.tier1 === 'attempting' ? ({ ...s, tier1: 'idle' }) : s)
-            }
+            failedTierRef.current = null
+            setCascadeStatuses(s => (s.tier1 === 'success' ? s : { ...s, tier1: 'failed' }))
+            setPendingRail(2)
+            toast('Tier 1 Canara Bank declined. Auto-advancing to Tier 2 (Bank of Baroda)...', { icon: '🔄' })
+            speak('Canara Bank declined. Automatically failing over to Tier 2, Bank of Baroda.')
+            setTimeout(() => {
+              runTier2()
+            }, 400)
           } 
         }
       })
@@ -704,15 +705,14 @@ export default function CheckoutSection({
           escape: true,
           confirm_close: false,
           ondismiss: () => {
-            if (failedTierRef.current === 2) {
-              failedTierRef.current = null
-              toast('Tier 2 dismissed. Auto-advancing to Tier 3 (Verified Card)...', { icon: '💳' })
-              setTimeout(() => {
-                runTier3()
-              }, 400)
-            } else {
-              setCascadeStatuses(s => s.tier2 === 'attempting' ? ({ ...s, tier2: 'idle' }) : s)
-            }
+            failedTierRef.current = null
+            setCascadeStatuses(s => (s.tier2 === 'success' ? s : { ...s, tier2: 'failed' }))
+            setPendingRail(3)
+            toast('Tier 2 Bank of Baroda declined. Auto-advancing to Tier 3 (Verified Card)...', { icon: '💳' })
+            speak('Bank of Baroda also declined. Automatically failing over to Tier 3, Verified Fallback Card.')
+            setTimeout(() => {
+              runTier3()
+            }, 400)
           } 
         }
       })
@@ -787,46 +787,44 @@ export default function CheckoutSection({
           escape: true,
           confirm_close: false,
           ondismiss: () => {
-            if (failedTierRef.current === 3) {
-              failedTierRef.current = null
-              
-              // 1. High-priority alert notification
-              toast((t) => (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  <strong style={{ color: '#fca5a5', display: 'flex', alignItems: 'center', gap: 6 }}>
-                    📱 All 3 Payment Rails Declined!
-                  </strong>
-                  <span style={{ fontSize: '0.78rem', color: '#e2e8f0' }}>
-                    Autonomous failover switched to Mobile Handset Rescue. Scan QR or tap WhatsApp to pay with an alternate bank/UPI.
-                  </span>
-                </div>
-              ), { duration: 9000, icon: '🚨' })
+            failedTierRef.current = null
+            setCascadeStatuses(s => (s.tier3 === 'success' ? s : { ...s, tier3: 'failed' }))
+            setPendingRail(4)
+            
+            // 1. High-priority alert notification
+            toast((t) => (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <strong style={{ color: '#fca5a5', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  📱 All 3 Payment Rails Declined!
+                </strong>
+                <span style={{ fontSize: '0.78rem', color: '#e2e8f0' }}>
+                  Autonomous failover switched to Mobile Handset Rescue. Scan QR or tap WhatsApp to pay with an alternate bank/UPI.
+                </span>
+              </div>
+            ), { duration: 9000, icon: '🚨' })
 
-              // 2. Audio Copilot notification
-              speak('Attention: All three automated payment rails have declined. Emergency mobile rescue link is active below. Please complete payment using an alternate account or UPI.')
+            // 2. Audio Copilot notification
+            speak('Attention: All three automated payment rails have declined. Emergency mobile rescue link is active below. Please complete payment using an alternate account or UPI.')
 
-              // 3. Desktop browser notification if permitted
-              if ('Notification' in window && Notification.permission === 'granted') {
-                try {
-                  new Notification('Rasor Autonomous Commerce Alert', {
-                    body: 'All 3 payment rails declined. Mobile rescue link ready to complete checkout.',
-                    icon: '/favicon.ico'
-                  })
-                } catch (e) {}
-              }
-
-              // 4. Activate Mobile Rescue Module
-              setIsRescueModuleActive(true)
+            // 3. Desktop browser notification if permitted
+            if ('Notification' in window && Notification.permission === 'granted') {
               try {
-                localStorage.setItem('rasor_rescue_module_active', 'true')
+                new Notification('Rasor Autonomous Commerce Alert', {
+                  body: 'All 3 payment rails declined. Mobile rescue link ready to complete checkout.',
+                  icon: '/favicon.ico'
+                })
               } catch (e) {}
-              setTimeout(() => {
-                const fullFailoverSummary = `${userProfile?.primaryBankLabel || 'Canara Bank'}, ${userProfile?.secondaryBankLabel || 'Bank of Baroda'}, Verified Card (•••• ${userProfile?.fallbackCard?.last4 || '1114'})`
-                handleTriggerMobileRescue(fullFailoverSummary, true)
-              }, 400)
-            } else {
-              setCascadeStatuses(s => s.tier3 === 'attempting' ? ({ ...s, tier3: 'idle' }) : s)
             }
+
+            // 4. Activate Mobile Rescue Module
+            setIsRescueModuleActive(true)
+            try {
+              localStorage.setItem('rasor_rescue_module_active', 'true')
+            } catch (e) {}
+            setTimeout(() => {
+              const fullFailoverSummary = `${userProfile?.primaryBankLabel || 'Canara Bank'}, ${userProfile?.secondaryBankLabel || 'Bank of Baroda'}, Verified Card (•••• ${userProfile?.fallbackCard?.last4 || '1114'})`
+              handleTriggerMobileRescue(fullFailoverSummary, true)
+            }, 400)
           } 
         }
       })
@@ -847,6 +845,41 @@ export default function CheckoutSection({
       setLoading(false)
     }
   }
+
+  const autoCascadeTriggeredRef = useRef(false)
+  const cascadeTimerRef = useRef(null)
+
+  // Autonomous Multi-Rail Failover Trigger (Dispatched from Chat / Quick Search buy commands)
+  useEffect(() => {
+    if (autoStartCascade && (demoMode === 'cascade_failover' || demoMode === 'failover') && cartItemsPayload?.length > 0) {
+      if (autoCascadeTriggeredRef.current) return
+      autoCascadeTriggeredRef.current = true
+
+      // Reset any prior cascade leftovers to ensure clean start
+      setCascadeStep(0)
+      setCascadeStatuses({ tier1: 'idle', tier2: 'idle', tier3: 'idle' })
+      setPendingRail(null)
+      setActiveOrderId(null)
+      failedTierRef.current = null
+
+      if (cascadeTimerRef.current) clearTimeout(cascadeTimerRef.current)
+
+      cascadeTimerRef.current = setTimeout(() => {
+        onResetAutoStartCascade?.()
+        handleStartCascade()
+      }, 400)
+    }
+  }, [autoStartCascade, demoMode, cartItemsPayload?.length])
+
+  useEffect(() => {
+    if (!autoStartCascade) {
+      autoCascadeTriggeredRef.current = false
+      if (cascadeTimerRef.current) {
+        clearTimeout(cascadeTimerRef.current)
+        cascadeTimerRef.current = null
+      }
+    }
+  }, [autoStartCascade])
 
   const handleCascadeSuccess = async (paymentId, orderId, railName) => {
     setLoading(true)
@@ -1032,7 +1065,7 @@ export default function CheckoutSection({
             Demo 2: Autonomous S2S
           </button>
           <button
-            className={`radio-option ${demoMode === 'cascade_failover' ? 'selected' : ''}`}
+            className={`radio-option ${(demoMode === 'cascade_failover' || demoMode === 'failover') ? 'selected' : ''}`}
             onClick={() => onDemoModeChange('cascade_failover')}
             style={{ fontWeight: 700 }}
           >
@@ -1163,7 +1196,7 @@ export default function CheckoutSection({
         )}
 
         {/* ── Demo 3 UI: Multi-Rail Failover Cascade ── */}
-        {demoMode === 'cascade_failover' && (
+        {(demoMode === 'cascade_failover' || demoMode === 'failover') && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             <div style={{ 
               background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.1), rgba(99, 102, 241, 0.1))', 

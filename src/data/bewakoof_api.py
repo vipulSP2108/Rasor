@@ -19,6 +19,7 @@ from src.data.schema_mapper import (
     BEWAKOOF_FIELD_MAP,
     UniversalProductMapper,
     resolve_handle,
+    parse_requested_sizes,
 )
 
 _DEFAULT_TOKEN = "NGNlNTUwYTc0MjBjYzQzZTdiZTNhMmY1NjNhMThhOGU6OGI1NThkZDgtOGQ5ZS00OWYxLTk4MDAtNzYxMGEzOGNjYzNk"
@@ -275,11 +276,18 @@ class BewakoofCatalogProvider(BaseCatalogProvider):
 
         # 4f. Size filter
         if size:
-            sz = size.upper()
-            all_products = [
-                p for p in all_products
-                if sz in [s.upper() for s in p.specs.get("available_sizes", [])]
-            ]
+            req_sizes = parse_requested_sizes(size)
+            if req_sizes:
+                matched = [
+                    p for p in all_products
+                    if any(
+                        rs in [s.upper() for s in p.specs.get("available_sizes", [])]
+                        or rs == str(p.specs.get("size", "")).upper()
+                        for rs in req_sizes
+                    )
+                ]
+                if matched:
+                    all_products = matched
 
         # 4g. Price filter
         if max_price is not None:

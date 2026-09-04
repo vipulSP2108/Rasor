@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react'
 import { Search, Sliders, Grid, List, ChevronDown, ChevronUp, Package, Trash2, ChevronLeft, ChevronRight, History, RotateCcw, Sparkles, Truck, Star } from 'lucide-react'
 import { searchProducts, estimateLogistics } from '../api/client'
 import { useApp } from '../context/AppContext'
+import { useVoice } from '../hooks/useVoice'
 import ProductCard from './ProductCard'
 import BatchedProductGrid from './BatchedProductGrid'
 import toast from 'react-hot-toast'
@@ -14,7 +15,7 @@ const QUICK_SEARCHES = [
   'Pastel hoodie women',
 ]
 
-export default function SearchPage({ onAddToCart }) {
+export default function SearchPage({ onAddToCart, onAutonomousCheckout }) {
   const { 
     config, 
     searchState, 
@@ -23,8 +24,12 @@ export default function SearchPage({ onAddToCart }) {
     saveSearchSnapshot, 
     restoreSearchSnapshot, 
     clearSearchHistory,
-    addHistoryRecord
+    addHistoryRecord,
+    clearCart,
+    addToCartLocal,
+    userProfile
   } = useApp()
+  const { speak } = useVoice()
 
   const {
     query = '',
@@ -252,6 +257,46 @@ export default function SearchPage({ onAddToCart }) {
           canonicalQuery: cq,
           products: prods,
         })
+
+        // Check for Quick Search Autonomous Buy Intent
+        if (data.buy_action?.action === 'buy_items') {
+          const targets = data.buy_action.targets || [1]
+          const quantities = data.buy_action.quantities || [1]
+          
+          clearCart()
+          const addedItems = []
+          targets.forEach((targetIdx, i) => {
+            const prodIndex = targetIdx - 1
+            const prod = prods[prodIndex]
+            if (prod) {
+              const qty = quantities[i] || 1
+              const detectedSizeMatch = (cq?.size || q).match(/\b(XS|S|M|L|XL|2XL|3XL|XXL|XXXL)\b/i) || q.match(/\b(?:to\s*excel|two\s*xl)\b/i)
+              let targetSize = userProfile?.defaultSize || 'XL'
+              if (detectedSizeMatch) {
+                const s = detectedSizeMatch[1] ? detectedSizeMatch[1].toUpperCase() : '2XL'
+                targetSize = s.replace('XXL', '2XL').replace('XXXL', '3XL')
+              }
+              const vids = prod.specs?.variant_ids || {}
+              const variantId = vids[targetSize] || vids[userProfile?.defaultSize || 'XL'] || Object.values(vids)[0] || `gid://shopify/ProductVariant/${prod.id}`
+
+              addToCartLocal(prod, qty, {
+                cart_id: `cart_${Date.now()}`,
+                variant_gid: variantId,
+                size: targetSize
+              })
+              addedItems.push(`${qty}x "${prod.title?.slice(0, 24)}..." (${targetSize})`)
+            }
+          })
+
+          if (addedItems.length > 0) {
+            toast.success(`🛒 Auto-Added: ${addedItems.join(', ')}`, { duration: 5000, icon: '⚡' })
+            speak(`Found items and added to cart. Initiating autonomous Multi-Rail Failover checkout now.`)
+
+            setTimeout(() => {
+              onAutonomousCheckout?.({ mode: 'cascade_failover', autoStart: true })
+            }, 600)
+          }
+        }
       } else {
         toast('No matching products found', { icon: '🔍' })
       }
@@ -576,7 +621,7 @@ export default function SearchPage({ onAddToCart }) {
                 {evaluations.map((e, i) => (
                   <div key={i} style={{ padding: 8, background: 'var(--bg)', borderRadius: 4, borderLeft: e.match_score >= 0.8 ? '3px solid var(--accent-green)' : (e.match_score >= 0.5 ? '3px solid var(--accent-orange)' : '3px solid var(--accent-red)') }}>
                     <strong>{e.product_id}</strong> (Score: {e.match_score})<br/>
-                    <span className="text-muted">{e.reasoning}</span>
+                    <span className="text-muted">{e.reason || e.reasoning}</span>
                   </div>
                 ))}
               </div>

@@ -5,7 +5,7 @@ import { useVoice } from '../hooks/useVoice'
 import CheckoutSection from './CheckoutSection'
 import toast from 'react-hot-toast'
 
-export default function CartDrawer({ onClose }) {
+export default function CartDrawer({ onClose, autoStartCascade = false, onResetAutoStartCascade }) {
   const { 
     cart, removeFromCart, updateQty, clearCart, 
     config, updateConfig, candidateBuffer = [], 
@@ -13,6 +13,8 @@ export default function CartDrawer({ onClose }) {
   } = useApp()
   const { speak } = useVoice()
   const curr = '₹'
+
+  const activeCandidateBuffer = candidateBuffer.filter(cand => !cart.items[cand.id])
 
   const handleSubstituteItem = (oldItem, newItem) => {
     if (!oldItem || !newItem) return
@@ -165,7 +167,7 @@ export default function CartDrawer({ onClose }) {
           </div>
 
           {/* OOS Pre-Fetched Buffer Candidate Card */}
-          {candidateBuffer.length > 0 && cartProducts.length > 0 && (
+          {activeCandidateBuffer.length > 0 && cartProducts.length > 0 && (
             <div style={{
               background: 'rgba(99, 102, 241, 0.08)',
               border: '1px solid rgba(99, 102, 241, 0.25)',
@@ -173,29 +175,28 @@ export default function CartDrawer({ onClose }) {
             }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
                 <span style={{ fontSize: '0.74rem', fontWeight: 700, color: '#a5b4fc', display: 'flex', alignItems: 'center', gap: 4 }}>
-                  <Sparkles size={12} /> Pre-Fetched Runner-Up Buffer ({candidateBuffer.length} cached)
+                  <Sparkles size={12} /> Pre-Fetched Runner-Up Buffer ({activeCandidateBuffer.length} cached)
                 </span>
                 <span className="badge badge-purple" style={{ fontSize: '0.66rem' }}>Zero-Latency</span>
               </div>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 6 }}>
                 <img
-                  src={candidateBuffer[0]?.specs?.display_image || candidateBuffer[0]?.specs?.image_url || 'https://via.placeholder.com/40'}
+                  src={activeCandidateBuffer[0]?.specs?.display_image || activeCandidateBuffer[0]?.specs?.image_url || 'https://via.placeholder.com/40'}
                   alt="Runner-up"
                   style={{ width: 36, height: 36, borderRadius: 4, objectFit: 'cover' }}
                 />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: '0.74rem', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {candidateBuffer[0]?.title}
+                <div style={{ flex: 1, overflow: 'hidden' }}>
+                  <div style={{ fontSize: '0.75rem', fontWeight: 600, whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' }}>
+                    {activeCandidateBuffer[0]?.title}
                   </div>
-                  <div style={{ fontSize: '0.7rem', color: '#10b981' }}>
-                    {curr}{candidateBuffer[0]?.price} (Size {userProfile?.defaultSize || 'XL'} Ready)
+                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                    {curr}{activeCandidateBuffer[0]?.price} (Size {userProfile?.defaultSize || 'XL'} Ready)
                   </div>
                 </div>
                 <button
-                  type="button"
-                  className="btn btn-secondary btn-xs"
-                  onClick={() => handleSubstituteItem(cartProducts[0], candidateBuffer[0])}
-                  style={{ fontSize: '0.7rem', padding: '4px 8px', whiteSpace: 'nowrap' }}
+                  className="btn btn-sm"
+                  style={{ background: 'rgba(99, 102, 241, 0.15)', color: '#a5b4fc', border: '1px solid rgba(99,102,241,0.3)', padding: '4px 8px', fontSize: '0.7rem', whiteSpace: 'nowrap' }}
+                  onClick={() => handleSubstituteItem(cartProducts[0], activeCandidateBuffer[0])}
                   title="Simulate Out-Of-Stock on Item #1 and substitute with pre-fetched buffer"
                 >
                   <RefreshCw size={11} /> Test OOS Swap
@@ -213,6 +214,8 @@ export default function CartDrawer({ onClose }) {
             demoMode={config.demoMode}
             onDemoModeChange={(m) => updateConfig({ demoMode: m })}
             onSuccess={onClose}
+            autoStartCascade={autoStartCascade}
+            onResetAutoStartCascade={onResetAutoStartCascade}
           />
         </div>
       </div>
