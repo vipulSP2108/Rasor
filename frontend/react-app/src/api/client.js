@@ -27,3 +27,5 @@ export const createIntentMandate = (data) => api.post('/api/mandate/intent', dat
 export const createCartMandate = (data) => api.post('/api/mandate/cart', data)
 export const getAcpFeed = () => api.get('/api/v1/acp/catalog.json')
 export const getRefunds = () => api.get('/api/checkout/refunds')
+export const bulkCancelPaymentLinks = () => api.post('/api/payment-links/bulk-cancel')
+export const cleanStaleRescueLinks = () => api.post('/api/payment-links/clean-stale-rescue')

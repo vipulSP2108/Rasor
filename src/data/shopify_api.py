@@ -23,6 +23,7 @@ import requests
 
 from src.agent.state import Product
 from src.data.base import BaseCatalogProvider
+from src.data.schema_mapper import parse_requested_sizes
 
 _LOCAL_RATINGS_CACHE: Dict[str, Dict[str, float]] = {}
 try:
@@ -322,34 +323,42 @@ class ShopifyCatalogProvider(BaseCatalogProvider):
         raw_nodes = self._fetch_via_products_query(structured_q, fetch_limit)
 
         # ── Tier 2: Storefront search() full-text ────────────────────────────
-        if not raw_nodes:
+        # If Tier 1 returned few items (< 15) or nothing, augment with full-text search
+        if len(raw_nodes) < 15:
             search_q = self._build_search_query(raw_keywords, category, gender)
-            print(f"🛍️ [Shopify Tier 2] search(query: '{search_q}')")
-            raw_nodes = self._fetch_via_search(search_q, fetch_limit)
+            if search_q:
+                print(f"🛍️ [Shopify Tier 2] search(query: '{search_q}')")
+                search_nodes = self._fetch_via_search(search_q, fetch_limit)
+                seen_ids = {n.get("id") for n in raw_nodes}
+                for n in search_nodes:
+                    if n.get("id") not in seen_ids:
+                        seen_ids.add(n.get("id"))
+                        raw_nodes.append(n)
 
         # ── Tier 3: Per-keyword union (split & OR) ───────────────────────────
-        if not raw_nodes:
+        if len(raw_nodes) < 5:
             print(f"🛍️ [Shopify Tier 3] Per-term union search")
-            seen_ids: Set[str] = set()
-            union_nodes: List[Dict] = []
-            # Try each meaningful keyword individually
+            seen_ids = {n.get("id") for n in raw_nodes}
             for kw in raw_keywords:
                 if kw in _NOISE_WORDS or len(kw) < 3:
                     continue
-                batch = self._fetch_via_products_query(kw, 20)
-                if not batch:
-                    batch = self._fetch_via_search(kw, 20)
+                batch = self._fetch_via_search(kw, 20) or self._fetch_via_products_query(kw, 20)
                 for node in batch:
                     nid = node.get("id", "")
                     if nid not in seen_ids:
                         seen_ids.add(nid)
-                        union_nodes.append(node)
-            raw_nodes = union_nodes
+                        raw_nodes.append(node)
 
         # ── Tier 4: Category / product-type only ─────────────────────────────
-        if not raw_nodes and not _skip(category):
+        if len(raw_nodes) < 3 and not _skip(category):
             print(f"🛍️ [Shopify Tier 4] product_type:{category}")
-            raw_nodes = self._fetch_via_products_query(f"product_type:{category}", fetch_limit)
+            cat_nodes = self._fetch_via_products_query(f"product_type:{category}", fetch_limit)
+            seen_ids = {n.get("id") for n in raw_nodes}
+            for node in cat_nodes:
+                nid = node.get("id", "")
+                if nid not in seen_ids:
+                    seen_ids.add(nid)
+                    raw_nodes.append(node)
 
         # ── Tier 5: Full catalog fallback ─────────────────────────────────────
         if not raw_nodes:
@@ -364,12 +373,20 @@ class ShopifyCatalogProvider(BaseCatalogProvider):
                 all_products.append(p)
 
         print(f"   → {len(all_products)} mapped before post-filter")
+        candidates_pool = list(all_products)
 
         # ── Post-filter pass (client-side precision) ──────────────────────────
 
         # Price filter (most important — apply first to reduce set)
         if max_price is not None:
-            all_products = [p for p in all_products if p.price <= max_price]
+            under_budget = [p for p in all_products if p.price <= max_price]
+            if under_budget:
+                all_products = under_budget
+            else:
+                # Relaxed near-budget fallback (within 25% or closest matches)
+                near_budget = [p for p in all_products if p.price <= max_price * 1.25]
+                if near_budget:
+                    all_products = near_budget
 
         # Color (check both tags and specs)
         if not _skip(color):
@@ -380,18 +397,22 @@ class ShopifyCatalogProvider(BaseCatalogProvider):
             ]
             if filtered:
                 all_products = filtered
-            # else: color filter produced 0 — keep all (avoid over-filtering)
 
-        # Size (only filter if sizes are actually populated)
+        # Size (match single or compound sizes like 'L/XL', 'M, L')
         if size:
-            sz = size.upper()
-            filtered = [
-                p for p in all_products
-                if not p.specs.get("available_sizes")  # keep if no size info (can't reject)
-                or sz in [s.upper() for s in p.specs.get("available_sizes", [])]
-            ]
-            if filtered:
-                all_products = filtered
+            req_sizes = parse_requested_sizes(size)
+            if req_sizes:
+                filtered = [
+                    p for p in all_products
+                    if not p.specs.get("available_sizes")
+                    or any(
+                        rs in [s.upper() for s in p.specs.get("available_sizes", [])]
+                        or rs == str(p.specs.get("size", "")).upper()
+                        for rs in req_sizes
+                    )
+                ]
+                if filtered:
+                    all_products = filtered
 
         # Fit
         if not _skip(fit):
@@ -416,6 +437,10 @@ class ShopifyCatalogProvider(BaseCatalogProvider):
             ]
             if filtered:
                 all_products = filtered
+
+        # Safety: If over-filtering eliminated everything, return candidates pool so user/LLM gets results
+        if not all_products and candidates_pool:
+            all_products = candidates_pool[:limit]
 
         # ── Status message ────────────────────────────────────────────────────
         filter_parts: List[str] = []

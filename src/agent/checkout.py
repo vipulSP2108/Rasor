@@ -349,6 +349,89 @@ class CheckoutAgent:
                 "buffer_minutes": effective_buffer
             }
         except Exception as e:
+            err_msg = str(e)
+            if "test mode limit of 30 reached" in err_msg.lower() or "limit of 30" in err_msg.lower():
+                print(f"[CheckoutAgent] Razorpay test account reached 30 link limit. Activating Order-based rescue mode.")
+                order = self.create_order(cart)
+                order_id = order.get("order_id") if (order and order.get("success")) else f"order_rescue_{int(time.time())}"
+                fallback_plink_id = f"plink_test_{int(time.time())}"
+                # Use the server's own /pay/{order_id} page (Razorpay Orders API — no 30-link limit)
+                server_base = os.getenv("SERVER_BASE_URL", "http://127.0.0.1:8000")
+                short_url = f"{server_base}/pay/{order_id}"
+
+                
+                if failed_attempts_summary:
+                    wa_text = (
+                        f"🚨 Multi-Rail Failover Exhausted (3/3 Rails Declined)\n\n"
+                        f"The agent attempted {failed_attempts_summary}. All 3 transactions were declined by their respective banking gateways.\n\n"
+                        f"👉 Autonomous failover has handed off to Mobile Rescue. Please complete payment before {deadline_str} using an alternate account, UPI, or GPay here:\n"
+                        f"{short_url}"
+                    )
+                else:
+                    wa_text = (
+                        f"Complete your Rasor order ({cart.currency} {cart.final_total:.0f}) before {deadline_str} here:\n"
+                        f"{short_url}"
+                    )
+
+                import urllib.parse
+                encoded_text = urllib.parse.quote(wa_text)
+                wa_url = f"https://wa.me/91{clean_phone}?text={encoded_text}"
+                wa_app_url = f"whatsapp://send?phone=91{clean_phone}&text={encoded_text}"
+                wa_web_url = f"https://web.whatsapp.com/send?phone=91{clean_phone}&text={encoded_text}"
+
+                links = self._load_payment_links()
+                links[fallback_plink_id] = {
+                    "plink_id": fallback_plink_id,
+                    "order_id": order_id,
+                    "cart_id": cart.cart_id,
+                    "amount": cart.final_total,
+                    "currency": cart.currency,
+                    "customer_name": customer_name,
+                    "customer_email": customer_email,
+                    "customer_phone": clean_phone,
+                    "created_at": int(time.time()),
+                    "expire_by": expire_by_timestamp,
+                    "requested_seconds": requested_seconds,
+                    "status": "created",
+                    "short_url": short_url
+                }
+                self._save_payment_links(links)
+
+                self.ledger.log_event(
+                    event_type="payment_link_created_for_mobile_rescue",
+                    details={
+                        "plink_id": fallback_plink_id,
+                        "order_id": order_id,
+                        "cart_id": cart.cart_id,
+                        "amount": cart.final_total,
+                        "short_url": short_url,
+                        "phone": clean_phone,
+                        "notify_sms": notify_sms,
+                        "notify_email": notify_email,
+                        "expire_by": expire_by_timestamp,
+                        "deadline_str": deadline_str,
+                        "buffer_minutes": effective_buffer
+                    }
+                )
+
+                return {
+                    "success": True,
+                    "plink_id": fallback_plink_id,
+                    "order_id": order_id,
+                    "short_url": short_url,
+                    "whatsapp_url": wa_url,
+                    "whatsapp_app_url": wa_app_url,
+                    "whatsapp_web_url": wa_web_url,
+                    "whatsapp_text": wa_text,
+                    "expire_by": expire_by_timestamp,
+                    "duration_seconds": requested_seconds,
+                    "status": "created",
+                    "deadline_str": deadline_str,
+                    "customer_window_minutes": customer_window_minutes,
+                    "buffer_minutes": effective_buffer,
+                    "failed_attempts_summary": failed_attempts_summary
+                }
+
             self.ledger.log_event(
                 event_type="payment_link_creation_failed",
                 details={"error": str(e), "cart_id": cart.cart_id}
@@ -383,9 +466,47 @@ class CheckoutAgent:
         if not self.client:
             return {"success": False, "error": "Razorpay not configured"}
         try:
-            res = self.client.payment_link.fetch(plink_id)
             import time
             now = int(time.time())
+            if str(plink_id).startswith("plink_test_"):
+                links = self._load_payment_links()
+                reg = links.get(plink_id, {})
+                expire_by = reg.get("expire_by", now + 900)
+                remaining_seconds = max(0, expire_by - now)
+                
+                # Check if order was paid on Razorpay
+                status = reg.get("status", "created")
+                amount_paid = float(reg.get("amount_paid", 0.0))
+                order_id = reg.get("order_id")
+                if order_id and status != "paid":
+                    try:
+                        payments_resp = self.client.order.payments(order_id)
+                        items = payments_resp.get("items", []) if isinstance(payments_resp, dict) else []
+                        for pay_item in items:
+                            if pay_item.get("status") in ("captured", "authorized"):
+                                status = "paid"
+                                amount_paid = (pay_item.get("amount", 0)) / 100.0
+                                reg["status"] = "paid"
+                                reg["amount_paid"] = amount_paid
+                                self._save_payment_links(links)
+                                break
+                    except Exception as err:
+                        print(f"[CheckoutAgent] Error checking order payments: {err}")
+
+                return {
+                    "success": True,
+                    "id": plink_id,
+                    "status": status,
+                    "amount_paid": amount_paid,
+                    "short_url": reg.get("short_url"),
+                    "expire_by": expire_by,
+                    "remaining_seconds": remaining_seconds,
+                    "cancelled_at": reg.get("cancelled_at", 0),
+                    "created_at": reg.get("created_at", now)
+                }
+
+
+            res = self.client.payment_link.fetch(plink_id)
             expire_by = res.get("expire_by", 0)
             raw_remaining = max(0, expire_by - now) if expire_by else 0
             links = self._load_payment_links()
@@ -411,6 +532,16 @@ class CheckoutAgent:
         if not self.client:
             return {"success": False, "error": "Razorpay not configured"}
         try:
+            import time
+            if str(plink_id).startswith("plink_test_"):
+                links = self._load_payment_links()
+                if plink_id in links:
+                    links[plink_id]["status"] = "cancelled"
+                    links[plink_id]["was_cancelled"] = True
+                    links[plink_id]["cancelled_at"] = int(time.time())
+                    self._save_payment_links(links)
+                return {"success": True, "status": "cancelled", "id": plink_id}
+
             res = self.client.payment_link.cancel(plink_id)
             status = res.get("status", "cancelled")
             links = self._load_payment_links()
@@ -430,6 +561,100 @@ class CheckoutAgent:
                 details={"plink_id": plink_id, "error": str(e)}
             )
             return {"success": False, "error": str(e)}
+
+    def clean_stale_rescue_links(self) -> dict:
+        """
+        Removes stale local plink_test_* rescue dummy entries that were never paid
+        (status: created / expired). This keeps the local registry clean and
+        prevents the status-checker from showing 'no longer active' for old dummies.
+        """
+        links = self._load_payment_links()
+        removed = []
+        for pid in list(links.keys()):
+            if pid.startswith("plink_test_") and links[pid].get("status") in ("created", "expired", "cancelled"):
+                removed.append(pid)
+                del links[pid]
+        self._save_payment_links(links)
+        print(f"[CheckoutAgent] Cleaned {len(removed)} stale rescue dummy entries.")
+        return {"success": True, "removed_count": len(removed), "removed_ids": removed}
+
+    def bulk_cancel_payment_links(self) -> dict:
+        """
+        Scans Razorpay payment links via API, finds any active/issued/created links,
+        and cancels them programmatically to free up test mode quota. Also cleans up local registry.
+        """
+        if not self.client:
+            return {"success": False, "error": "Razorpay not configured", "cancelled_count": 0}
+
+        cancelled_count = 0
+        failed_count = 0
+        total_scanned = 0
+
+        try:
+            import time
+            all_links = []
+            skip = 0
+            while True:
+                batch_data = None
+                for attempt in range(3):
+                    try:
+                        batch_data = self.client.payment_link.all({"count": 50, "skip": skip})
+                        break
+                    except Exception as e:
+                        if "too many requests" in str(e).lower() and attempt < 2:
+                            time.sleep(1.5)
+                            continue
+                        raise e
+
+                items = (batch_data.get("payment_links") if batch_data else None) or (batch_data.get("items") if batch_data else None) or []
+                if not items:
+                    break
+                all_links.extend(items)
+                if len(items) < 50:
+                    break
+                skip += len(items)
+
+            total_scanned = len(all_links)
+
+            for link in all_links:
+                status = link.get("status")
+                link_id = link.get("id")
+                if status in ("created", "issued", "partially_paid"):
+                    try:
+                        self.client.payment_link.cancel(link_id)
+                        cancelled_count += 1
+                        print(f"[BulkCancel] Successfully cancelled test link: {link_id}")
+                    except Exception as e:
+                        print(f"[BulkCancel] Failed to cancel {link_id}: {e}")
+                        failed_count += 1
+
+            # Also mark all local pending/created test links as cancelled
+            local_links = self._load_payment_links()
+            for pid in list(local_links.keys()):
+                if local_links[pid].get("status") in ("created", "issued"):
+                    local_links[pid]["status"] = "cancelled"
+                    local_links[pid]["was_cancelled"] = True
+            self._save_payment_links(local_links)
+
+
+            self.ledger.log_event(
+                event_type="payment_links_bulk_cancelled",
+                details={
+                    "cancelled_count": cancelled_count,
+                    "failed_count": failed_count,
+                    "total_scanned": total_scanned
+                }
+            )
+
+            return {
+                "success": True,
+                "cancelled_count": cancelled_count,
+                "failed_count": failed_count,
+                "total_scanned": total_scanned,
+                "message": f"Successfully cancelled {cancelled_count} active test payment link(s)."
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e), "cancelled_count": cancelled_count}
 
     def reconcile_payment_links(self) -> list:
         """

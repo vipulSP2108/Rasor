@@ -32,12 +32,19 @@ load_dotenv()
 # Response Model
 # ---------------------------------------------------------------------------
 
+class BuyAction(BaseModel):
+    action: str = Field(description="'buy_items' or 'clarify_quantity'")
+    targets: list[int] = Field(default_factory=list, description="1-based product pick indices, e.g. [1] or [1, 2]")
+    quantities: list[int] = Field(default_factory=list, description="Quantity for each target, e.g. [1] or [2] or [1, 1]")
+    reason: Optional[str] = None
+
 class StylistResponse(BaseModel):
-    intent: str = Field(default="clarify", description="One of: greeting, clarify, search, autopilot")
+    intent: str = Field(default="clarify", description="One of: greeting, clarify, search, autopilot, buy, clarify_quantity")
     message: str = Field(..., description="Conversational reply to show the user.")
     ready_for_search: bool = Field(default=False, description="True when intent is refined enough to hit CatalogAgent.")
     updated_query: str = Field(default="", description="Synthesized search query from all conversation turns so far.")
     suggested_options: list[str] = Field(default_factory=list, description="List of short quick-reply options for the user to tap (e.g. ['Oversized', 'Slim Fit']).")
+    buy_action: Optional[BuyAction] = None
 
 
 # ---------------------------------------------------------------------------
@@ -164,15 +171,42 @@ YOUR DECISION RULES (follow these strictly):
    - Append "fast delivery" (and location/pincode if provided) to `updated_query`.
    - Set intent="search", ready_for_search=true.
 
+8. ONE-SHOT DELEGATED FIND & BUY (IMMEDIATE PURCHASE):
+   If the user asks to find/pick items AND directly order/buy them in the same message, or delegates selection completely (e.g. "directly pick up the first two hoodies and order for me", "first to hoodies and order for me", "pick any colour... directly order for me", "just get me 2 hoodies directly order", "buy the first 2 t-shirts"):
+   - NEVER ASK CLARIFYING QUESTIONS! The user has explicitly delegated the selection to you and wants immediate autonomous execution.
+   - Extract the core clothing item and gender/fit from the message (e.g. "men hoodies" or "hoodies" or "oversized t-shirt").
+   - Set intent="buy"
+   - Set ready_for_search=true
+   - Set updated_query="<extracted item category>" (e.g. "men hoodies" or "hoodies")
+   - Set buy_action={"action": "buy_items", "targets": [1, 2], "quantities": [1, 1]} (or targets: [1] if only 1 item requested)
+   - In message: Confirm enthusiastically that you're picking the top items and launching the autonomous Multi-Rail Failover checkout immediately!
+
+9. CONVERSATIONAL BUY FROM EXISTING PICKS: If curated picks were already displayed in the conversation and the user wants to buy from them (e.g., "buy the top pick", "buy 1 and 2", "buy #1", "buy 2", "han bhai pic 1 and pic 2"):
+   - Single item ("buy the top pick", "buy #1", "buy first one", "buy this"):
+     Set intent="buy", ready_for_search=false,
+     buy_action={"action": "buy_items", "targets": [1], "quantities": [1]},
+     message="Adding the top pick to your cart and initiating autonomous Multi-Rail Failover checkout now."
+   - Multiple items ("buy 1 and 2", "buy #1 and #2", "buy top 2", "pic 1 and 2"):
+     Set intent="buy", ready_for_search=false,
+     buy_action={"action": "buy_items", "targets": [1, 2], "quantities": [1, 1]},
+     message="Adding picks #1 and #2 to your cart and initiating autonomous Multi-Rail Failover checkout now."
+   - Ambiguous quantity ("buy 2", "order 2" without any picks yet or without specifying which):
+     If no items are chosen and no category is given:
+     Set intent="clarify_quantity", ready_for_search=false,
+     buy_action={"action": "clarify_quantity", "targets": [], "quantities": [2]},
+     message="Would you like 2 units of the top pick (#1), or pick #1 and pick #2 (different picks)?",
+     suggested_options=["2 of Top Pick (#1)", "Pick #1 and Pick #2"]
+
 IMPORTANT: Always return valid JSON only. No markdown, no extra text.
 
 JSON SCHEMA:
 {
-  "intent": "greeting|clarify|search|autopilot",
+  "intent": "greeting|clarify|search|autopilot|buy|clarify_quantity",
   "message": "Your natural language reply to the user (ONLY ONE QUESTION MAX)",
   "ready_for_search": true or false,
   "updated_query": "concise search query string if ready_for_search is true, else empty string",
-  "suggested_options": ["Option 1", "Option 2"] // Provide 2-4 short options for the user to tap if you asked a clarifying question (e.g. ["Oversized", "Slim Fit"]). Max 3 words per option. Leave empty [] if no options make sense.
+  "suggested_options": ["Option 1", "Option 2"],
+  "buy_action": null or {"action": "buy_items|clarify_quantity", "targets": [1], "quantities": [1]}
 }
 """
 
@@ -392,11 +426,84 @@ class StylistAgent:
 
     # ── Main Entry Point ─────────────────────────────────────────────────────
 
-    def process_turn(self, user_input: str, conversation_history: list) -> StylistResponse:
-        """
-        Process the user's input using the full conversation history.
-        Returns a structured StylistResponse with the AI's reply and search intent.
-        """
+    def _detect_buy_intent(self, user_input: str, conversation_history: list[dict]) -> Optional[StylistResponse]:
+        text = user_input.strip().lower()
+
+        # Check last assistant message to see if we just asked for quantity clarification
+        last_asst = ""
+        for m in reversed(conversation_history):
+            if m.get("role") == "assistant":
+                last_asst = m.get("content", "").lower()
+                break
+
+        waiting_qty_clarification = "would you like 2 units of the top pick" in last_asst or "different picks" in last_asst
+
+        # If waiting for clarification:
+        if waiting_qty_clarification:
+            # 1. Explicit same item (e.g. "2 of top pick", "same", "same one", "2 of #1", "ek hi")
+            if re.search(r'\b2\s*of\s*(?:the\s*)?(?:top|first|pick\s*#?1|#?1|item\s*#?1)\b', text) or re.search(r'\b(?:same|same\s*one|ek\s*hi|only\s*top)\b', text):
+                return StylistResponse(
+                    intent="buy",
+                    message="Great! Adding 2 units of the top pick to your cart and launching autonomous Multi-Rail Failover checkout now.",
+                    ready_for_search=False,
+                    buy_action=BuyAction(action="buy_items", targets=[1], quantities=[2])
+                )
+
+            # 2. Both / Different picks (e.g. "han bhai pic 1 and pic 2", "1 and 2", "1 & 2", "pick 1 and 2", "both", "different", "alag", "dono")
+            has_1_and_2 = bool(('1' in text and '2' in text and (re.search(r'(&|\band\b|\baur\b|\bboth\b|\bplus\b|,)', text) or 'pic' in text or 'pick' in text)))
+            has_multi_kw = bool(re.search(r'\b(both|different|two\s*different|two\s*picks|two\s*pics|first\s*two|top\s*two|dono|alag)\b', text))
+
+            if has_1_and_2 or has_multi_kw:
+                return StylistResponse(
+                    intent="buy",
+                    message="Perfect! Adding picks #1 and #2 to your cart and launching autonomous Multi-Rail Failover checkout now.",
+                    ready_for_search=False,
+                    buy_action=BuyAction(action="buy_items", targets=[1, 2], quantities=[1, 1])
+                )
+
+            # 3. Fallback for single top pick:
+            if re.search(r'\b(top\s*pick|only\s*1|first\s*one|#?1\b)', text):
+                return StylistResponse(
+                    intent="buy",
+                    message="Great! Adding 2 units of the top pick to your cart and launching autonomous Multi-Rail Failover checkout now.",
+                    ready_for_search=False,
+                    buy_action=BuyAction(action="buy_items", targets=[1], quantities=[2])
+                )
+
+        # Direct multi-item outside clarification: "buy 1 and 2", "han bhai pic 1 and pic 2", "1 and 2", "pic 1 and pic 2"
+        has_direct_1_and_2 = bool(('1' in text and '2' in text and (re.search(r'(&|\band\b|\baur\b|\bboth\b|\bplus\b|,)', text) or 'pic' in text or 'pick' in text)))
+        has_direct_multi_kw = bool(re.search(r'\b(both|different|two\s*different|two\s*picks|two\s*pics|first\s*two|top\s*two|dono|alag)\b', text))
+        if has_direct_1_and_2 or has_direct_multi_kw or re.search(r"\b(?:buy|order|get|purchase|checkout)\s+(?:#?1\s*(?:and|&)\s*#?2|top\s*2|first\s*2|first\s*two)\b", text):
+            return StylistResponse(
+                intent="buy",
+                message="Adding picks #1 and #2 to your cart and launching autonomous Multi-Rail Failover checkout now.",
+                ready_for_search=False,
+                buy_action=BuyAction(action="buy_items", targets=[1, 2], quantities=[1, 1])
+            )
+
+        # Ambiguous quantity: "buy 2", "order 2", "get 2", "buy two"
+        if re.search(r"\b(?:buy|order|get|purchase)\s+(?:2|two)\b", text) and not (has_direct_1_and_2 or has_direct_multi_kw):
+            return StylistResponse(
+                intent="clarify_quantity",
+                message="Would you like 2 units of the top pick (#1), or pick #1 and pick #2 (different picks)?",
+                ready_for_search=False,
+                suggested_options=["2 of Top Pick (#1)", "Pick #1 and Pick #2"],
+                buy_action=BuyAction(action="clarify_quantity", targets=[], quantities=[2])
+            )
+
+        # Direct single item: "buy the top pick", "buy #1", "buy 1", "buy the first one", "buy this", "order this"
+        if re.search(r"\b(?:buy|order|get|purchase|checkout)\s*(?:the\s*)?(?:top\s*pick|#?1|first\s*one|first|this\s*one|this)\b", text) or text in ["buy", "buy it", "buy now", "buy this", "order now"]:
+            return StylistResponse(
+                intent="buy",
+                message="Adding the top pick to your cart and launching autonomous Multi-Rail Failover checkout now.",
+                ready_for_search=False,
+                buy_action=BuyAction(action="buy_items", targets=[1], quantities=[1])
+            )
+
+        return None
+
+    def process_turn(self, user_input: str, conversation_history: list[dict]) -> StylistResponse:
+        """Processes a single conversational turn with LLM first for maximum contextual understanding."""
         # Check for skin tone rating first — inject colors into query
         skin_tone_match = re.search(r"\b(?:skin\s*tone[^0-9]*|tone[^0-9]*|i['\']?m\s*(?:a\s*)?|around\s*a?\s*)(\d+)\b", user_input.lower())
         if not skin_tone_match and user_input.strip().isdigit() and 1 <= int(user_input.strip()) <= 10:
@@ -416,7 +523,10 @@ class StylistAgent:
         parsed = self._extract_json(raw)
 
         if not parsed:
-            # Smart rule-based fallback when LLM is unavailable
+            # Fallback to local rule engine only if LLM is unreachable
+            buy_resp = self._detect_buy_intent(user_input, conversation_history)
+            if buy_resp:
+                return buy_resp
             return self._rule_fallback(user_input, conversation_history)
 
         # If skin tone was detected, ensure color theory palette is recommended and search is ready
@@ -435,10 +545,20 @@ class StylistAgent:
             parsed["updated_query"] = f"{existing_query} {best_colors}".strip()
             parsed["ready_for_search"] = True
 
+        buy_action_dict = parsed.get("buy_action")
+        buy_action_obj = None
+        if buy_action_dict and isinstance(buy_action_dict, dict) and buy_action_dict.get("action"):
+            buy_action_obj = BuyAction(
+                action=buy_action_dict.get("action"),
+                targets=buy_action_dict.get("targets", []),
+                quantities=buy_action_dict.get("quantities", [])
+            )
+
         return StylistResponse(
             intent=parsed.get("intent", "clarify"),
             message=parsed.get("message", "Could you tell me more about what you're looking for?"),
             ready_for_search=parsed.get("ready_for_search", False),
             updated_query=parsed.get("updated_query", ""),
-            suggested_options=parsed.get("suggested_options", [])
+            suggested_options=parsed.get("suggested_options", []),
+            buy_action=buy_action_obj
         )

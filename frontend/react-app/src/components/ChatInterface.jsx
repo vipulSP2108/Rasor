@@ -20,8 +20,8 @@ const INITIAL_MESSAGES = [
   }
 ]
 
-export default function ChatInterface({ onAddToCart }) {
-  const { config, chatMessages, setChatMessages, clearChatMessages, addHistoryRecord, setCandidateBuffer } = useApp()
+export default function ChatInterface({ onAddToCart, onAutonomousCheckout }) {
+  const { config, chatMessages, setChatMessages, clearChatMessages, addHistoryRecord, setCandidateBuffer, addToCartLocal, clearCart, userProfile } = useApp()
   const [input, setInput] = useState('')
   const [isThinking, setIsThinking] = useState(false)
   const [isSearching, setIsSearching] = useState(false)
@@ -33,6 +33,17 @@ export default function ChatInterface({ onAddToCart }) {
   const endRef = useRef(null)
   const inputRef = useRef(null)
   const carouselsRef = useRef({})
+  const lastCuratedPicksRef = useRef([])
+
+  // Keep lastCuratedPicksRef in sync with most recent products in chat history
+  useEffect(() => {
+    for (let i = chatMessages.length - 1; i >= 0; i--) {
+      if (chatMessages[i].products && chatMessages[i].products.length > 0) {
+        lastCuratedPicksRef.current = chatMessages[i].products
+        break
+      }
+    }
+  }, [chatMessages])
 
   const isShelfExpanded = (idx, state = expandedShelves) => {
     if (state[idx] !== undefined) return state[idx]
@@ -89,24 +100,24 @@ export default function ChatInterface({ onAddToCart }) {
         suggestedOptions: data.suggested_options || [],
       }
 
-      setChatMessages(prev => {
-        const next = [...prev, assistantMsg]
-        const targetIdx = next.length - 1
-        // Auto-play voice if enabled
-        if (config.voiceEnabled) {
-          setSpeakingIdx(targetIdx)
-          speak(data.message, config.voiceURI, () => {
-            setSpeakingIdx(null)
-            // Listening only begins strictly AFTER the AI finishes speaking
-            if (isAutoVoice) {
-              setTimeout(() => {
-                startListening()
-              }, 400)
-            }
-          })
-        }
-        return next
-      })
+      setChatMessages(prev => [...prev, assistantMsg])
+
+      // Auto-play voice if enabled
+      if (config.voiceEnabled && data.message) {
+        setSpeakingIdx(chatMessages.length + 1)
+        speak(data.message, config.voiceURI, () => {
+          setSpeakingIdx(null)
+          // Listening only begins strictly AFTER the AI finishes speaking
+          if (isAutoVoice) {
+            setTimeout(() => {
+              startListening()
+            }, 400)
+          }
+        })
+      }
+
+
+      let currentAvailableProducts = lastCuratedPicksRef.current || []
 
       if (data.ready_for_search && data.updated_query) {
         setIsSearching(true)
@@ -129,6 +140,8 @@ export default function ChatInterface({ onAddToCart }) {
           })
           const prods = searchData.products || []
           if (prods.length > 0) {
+            lastCuratedPicksRef.current = prods
+            currentAvailableProducts = prods
             if (prods.length > 1) {
               setCandidateBuffer(prods.slice(1, 6))
             }
@@ -155,6 +168,52 @@ export default function ChatInterface({ onAddToCart }) {
           toast.error('Search failed: ' + (err.response?.data?.detail || err.message))
         } finally {
           setIsSearching(false)
+        }
+      }
+
+      // ── Conversational Autonomous Purchase Handler ───────────────────────
+      if (data.intent === 'buy' && data.buy_action?.action === 'buy_items') {
+        const availableProducts = currentAvailableProducts
+        const targets = data.buy_action.targets || [1]
+        const quantities = data.buy_action.quantities || [1]
+
+        if (availableProducts.length === 0) {
+          toast('No active items to buy. Please ask for products first!', { icon: '🛍️' })
+        } else {
+          clearCart()
+          const addedItems = []
+          targets.forEach((targetIdx, i) => {
+            const prodIndex = targetIdx - 1
+            const prod = availableProducts[prodIndex]
+            if (prod) {
+              const qty = quantities[i] || 1
+              const detectedSizeMatch = (data.updated_query || userText).match(/\b(XS|S|M|L|XL|2XL|3XL|XXL|XXXL)\b/i) || userText.match(/\b(?:to\s*excel|two\s*xl)\b/i)
+              let targetSize = userProfile?.defaultSize || 'XL'
+              if (detectedSizeMatch) {
+                const s = detectedSizeMatch[1] ? detectedSizeMatch[1].toUpperCase() : '2XL'
+                targetSize = s.replace('XXL', '2XL').replace('XXXL', '3XL')
+              }
+              const vids = prod.specs?.variant_ids || {}
+              const variantId = vids[targetSize] || vids[userProfile?.defaultSize || 'XL'] || Object.values(vids)[0] || `gid://shopify/ProductVariant/${prod.id}`
+
+              addToCartLocal(prod, qty, {
+                cart_id: `cart_${Date.now()}`,
+                variant_gid: variantId,
+                size: targetSize
+              })
+              addedItems.push(`${qty}x "${prod.title?.slice(0, 24)}..." (${targetSize})`)
+            }
+          })
+
+          if (addedItems.length > 0) {
+            toast.success(`🛒 Auto-Added: ${addedItems.join(', ')}`, { duration: 5000, icon: '⚡' })
+            speak(`Added to your cart. Initiating autonomous Multi-Rail Failover checkout now.`)
+
+            // Hand off to Demo 3 Multi-Rail Failover checkout
+            setTimeout(() => {
+              onAutonomousCheckout?.({ mode: 'cascade_failover', autoStart: true })
+            }, 500)
+          }
         }
       }
     } catch (err) {

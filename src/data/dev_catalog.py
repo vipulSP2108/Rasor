@@ -6,6 +6,7 @@ import re
 from typing import List, Optional
 from src.agent.state import Product
 from src.data.base import BaseCatalogProvider
+from src.data.schema_mapper import parse_requested_sizes
 
 _CATALOG_PATH = os.path.join(os.path.dirname(__file__), "mock_products.json")
 _KNOWN_COLORS = [
@@ -74,9 +75,12 @@ class DevCatalogProvider(BaseCatalogProvider):
 
             # Size check
             if size:
-                prod_size = str(p.specs.get("size", "")).upper()
-                if size.upper() != prod_size and size.upper() not in [str(s).upper() for s in p.specs.get("available_sizes", [])]:
-                    continue
+                req_sizes = parse_requested_sizes(size)
+                if req_sizes:
+                    prod_size = str(p.specs.get("size", "")).upper()
+                    avail = [str(s).upper() for s in p.specs.get("available_sizes", [])]
+                    if not any(rs == prod_size or rs in avail for rs in req_sizes):
+                        continue
 
             # Color check
             prod_color = str(p.specs.get("color", "")).lower()

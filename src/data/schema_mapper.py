@@ -10,8 +10,29 @@ This module is designed to be:
     New handles or field aliases can be added without modifying parsing logic.
 """
 
+import re
 from typing import Any, Dict, List, Optional
 from src.agent.state import Product
+
+def parse_requested_sizes(size_str: Optional[str]) -> List[str]:
+    """
+    Parses size specifications like 'L/XL', 'M, L', 'XL / XXL', 'L or XL', '2XL'
+    into a list of normalized uppercase size tokens: ['L', 'XL'].
+    """
+    if not size_str:
+        return []
+    cleaned = str(size_str).strip()
+    if cleaned.lower() in ("any", "none", "all", ""):
+        return []
+    cleaned = cleaned.upper().replace("XXXL", "3XL").replace("XXL", "2XL")
+    parts = re.split(r"[/,|]|\bOR\b", cleaned)
+    result = []
+    for p in parts:
+        s = p.strip()
+        if s:
+            result.append(s)
+    return result
+
 
 # ---------------------------------------------------------------------------
 # 1. Bewakoof Handle Registry

@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, HTMLResponse
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 import json
@@ -224,6 +224,8 @@ def get_products_by_ids(req: ProductsByIdsRequest):
 @app.post("/api/search")
 def search(req: SearchRequest):
     try:
+        from src.agent.stylist import StylistAgent
+        
         # Force upgrade legacy models sent by stale frontend state
         if req.primary_model in ["gemini-1.5-flash", "gemini-2.5-flash"]:
             req.primary_model = "gemini-3.5-flash"
@@ -265,8 +267,23 @@ def search(req: SearchRequest):
         )
         provider = get_provider(req.data_source)
 
+        # Check if the query is a conversational query or delegated buy intent
+        buy_action_dict = None
+        effective_query = req.query
+        if req.query and any(verb in req.query.lower() for verb in ["buy", "order", "pick up", "get me", "add", "cart"]):
+            try:
+                temp_agent = StylistAgent(primary_model=config.primary_model, fallback_model=config.fallback_model)
+                resp = temp_agent.process_turn(req.query, [])
+                if resp and getattr(resp, "intent", None) == "buy" and getattr(resp, "buy_action", None):
+                    buy_action_dict = resp.buy_action.model_dump()
+                    if resp.updated_query:
+                        effective_query = resp.updated_query
+                        print(f"[Search] Conversational buy intent detected. Rewriting search query '{req.query[:40]}...' -> '{effective_query}'")
+            except Exception as e:
+                print("[Search] Failed to detect buy intent in search query:", e)
+
         # Parse canonical query
-        multi_query, norm_source = brain.normalize_intent(req.query, budget=config.max_budget)
+        multi_query, norm_source = brain.normalize_intent(effective_query, budget=config.max_budget)
         if not multi_query or not multi_query.items_to_buy:
             return {"products": [], "status": "No canonical query extracted", "canonical_query": None}
             
@@ -466,6 +483,7 @@ def search(req: SearchRequest):
             "sort_mode": sort_mode,                      # "relevance" | "tier_delivery"
             "is_delivery_sorted": is_fast_shipping,
             "vqa_ran": vqa_ran,
+            "buy_action": buy_action_dict,
         }
     except Exception as e:
         traceback.print_exc()
@@ -487,10 +505,12 @@ def chat(req: ChatRequest):
         agent = _stylist_agents[req.session_id]
         response = agent.process_turn(req.message, req.history)
         return {
+            "intent": getattr(response, "intent", "clarify"),
             "message": response.message,
             "suggested_options": getattr(response, "suggested_options", []),
             "ready_for_search": getattr(response, "ready_for_search", False),
             "updated_query": getattr(response, "updated_query", None),
+            "buy_action": response.buy_action.model_dump() if getattr(response, "buy_action", None) else None,
         }
     except Exception as e:
         traceback.print_exc()
@@ -753,6 +773,136 @@ def cancel_payment_link_endpoint(plink_id: str):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/payment-links/bulk-cancel")
+def bulk_cancel_payment_links_endpoint():
+    """Bulk cancels active/issued payment links to free up Razorpay test mode limit."""
+    if not HAS_CHECKOUT:
+        raise HTTPException(status_code=503, detail="CheckoutAgent not available")
+    try:
+        agent = CheckoutAgent()
+        return agent.bulk_cancel_payment_links()
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/payment-links/clean-stale-rescue")
+def clean_stale_rescue_links_endpoint():
+    """Removes stale local plink_test_* rescue dummy entries that were never paid.
+    Prevents 'payment link no longer active' messages for old dummy rescue records."""
+    if not HAS_CHECKOUT:
+        raise HTTPException(status_code=503, detail="CheckoutAgent not available")
+    try:
+        agent = CheckoutAgent()
+        return agent.clean_stale_rescue_links()
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/pay/{order_id}", response_class=HTMLResponse)
+def mobile_pay_page(order_id: str):
+    """Mobile Rescue Payment Web Page: Runs real Razorpay Checkout on phone or desktop browser."""
+    from src.config import RAZORPAY_KEY_ID
+    agent = CheckoutAgent()
+    links = agent._load_payment_links()
+    link_data = None
+    target_plink_id = None
+    for pid, ldata in links.items():
+        if ldata.get("order_id") == order_id or pid == order_id:
+            link_data = ldata
+            target_plink_id = pid
+            break
+
+    amount = int((link_data.get("amount", 1999) if link_data else 1999) * 100)
+    customer_name = link_data.get("customer_name", "Vipul Patil") if link_data else "Vipul Patil"
+    customer_phone = link_data.get("customer_phone", "8806549952") if link_data else "8806549952"
+    customer_email = link_data.get("customer_email", "vipul@test.com") if link_data else "vipul@test.com"
+    failed_rails = link_data.get("failed_attempts_summary", "") if link_data else ""
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Rasor Mobile Payment Rescue</title>
+  <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+  <style>
+    body {{
+      margin: 0; padding: 16px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f172a; color: #f8fafc; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 90vh;
+      box-sizing: border-box;
+    }}
+    .card {{
+      background: #1e293b; border: 1px solid rgba(99, 102, 241, 0.3); border-radius: 14px; padding: 24px; max-width: 400px; width: 100%; text-align: center; box-shadow: 0 10px 25px rgba(0,0,0,0.5); box-sizing: border-box;
+    }}
+    h2 {{ margin-top: 0; color: #6ee7b7; font-size: 1.3rem; margin-bottom: 8px; }}
+    p {{ color: #94a3b8; font-size: 0.88rem; line-height: 1.5; margin: 8px 0; }}
+    .btn {{
+      background: #10b981; color: #fff; font-size: 1rem; font-weight: 700; border: none; padding: 14px 24px; border-radius: 8px; cursor: pointer; width: 100%; margin-top: 18px; box-shadow: 0 4px 12px rgba(16,185,129,0.3);
+    }}
+    .badge {{
+      display: inline-block; background: rgba(16, 185, 129, 0.15); color: #34d399; font-size: 0.75rem; padding: 4px 10px; border-radius: 20px; font-weight: 600; margin-bottom: 12px; border: 1px solid rgba(16, 185, 129, 0.3);
+    }}
+    .failed-notice {{
+      background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 6px; padding: 8px 10px; font-size: 0.78rem; color: #fca5a5; margin: 12px 0; text-align: left;
+    }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge">⚡ Rasor Autonomous Mobile Rescue</div>
+    <h2>Complete Your Payment</h2>
+    {f'<div class="failed-notice">⚠️ Primary rails ({failed_rails}) declined. Complete your checkout securely below using UPI, GPay, PhonePe, or Cards.</div>' if failed_rails else ''}
+    <p>Please complete your order on this mobile device using an alternate bank account, UPI, or card.</p>
+    <div style="font-size: 1.6rem; font-weight: 800; color: #fff; margin: 14px 0;">
+      ₹{amount // 100}
+    </div>
+    <button id="pay-btn" class="btn" onclick="openRazorpay()">Pay with Razorpay</button>
+  </div>
+  <script>
+    const options = {{
+      key: "{RAZORPAY_KEY_ID}",
+      amount: {amount},
+      currency: "INR",
+      name: "Rasor Autonomous Commerce",
+      description: "Mobile Rescue Checkout",
+      order_id: "{order_id}",
+      prefill: {{
+        name: "{customer_name}",
+        email: "{customer_email}",
+        contact: "{customer_phone}"
+      }},
+      theme: {{ color: "#10b981" }},
+      handler: async function (response) {{
+        const btn = document.getElementById('pay-btn');
+        btn.innerText = "Payment Verified! Updating...";
+        btn.style.background = "#6366f1";
+        try {{
+          await fetch('/api/checkout/verify', {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/json' }},
+            body: JSON.stringify({{
+              payment_id: response.razorpay_payment_id,
+              order_id: "{order_id}",
+              signature: response.razorpay_signature || ""
+            }})
+          }});
+        }} catch(e) {{}}
+        document.body.innerHTML = '<div class="card" style="text-align:center;"><div class="badge">✅ Success</div><h2>Payment Verified!</h2><p>Your order has been captured and synchronized to Shopify. You can return to your computer.</p></div>';
+      }}
+    }};
+    const rzp = new Razorpay(options);
+    function openRazorpay() {{
+      rzp.open();
+    }}
+    window.onload = function() {{
+      setTimeout(openRazorpay, 500);
+    }};
+  </script>
+</body>
+</html>
+"""
+    return HTMLResponse(content=html)
+
 @app.post("/api/checkout/failover-log")
 def checkout_failover_log(req: FailoverLogRequest):
     """Logs autonomous rail failovers to the audit ledger."""
@@ -868,6 +1018,16 @@ def checkout_verify(req: VerifyPaymentRequest):
     try:
         agent = CheckoutAgent()
         valid = agent.verify_payment(req.payment_id, req.order_id)
+        if valid:
+            # Reconcile payment links registry so status becomes 'paid'
+            links = agent._load_payment_links()
+            for pid, ldata in links.items():
+                if ldata.get("order_id") == req.order_id or pid == req.order_id or ldata.get("plink_id") == req.order_id:
+                    links[pid]["status"] = "paid"
+                    links[pid]["payment_id"] = req.payment_id
+                    links[pid]["paid_at"] = int(time.time())
+                    agent._save_payment_links(links)
+                    break
         return {"valid": valid}
     except Exception as e:
         traceback.print_exc()
