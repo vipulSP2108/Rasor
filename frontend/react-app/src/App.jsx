@@ -38,13 +38,27 @@ function AppShell() {
   }
 
   const navigate = (p) => {
-    setPage(p)
+    if (p === 'chat') {
+      setPage('home')
+      setTab('chat')
+    } else if (p === 'outfits') {
+      setPage('home')
+      setTab('outfits')
+    } else if (p === 'search') {
+      setPage('home')
+      setTab('search')
+    } else {
+      setPage(p)
+    }
     if (cartOpen) setCartOpen(false)
   }
 
   return (
     <div className="app-shell">
-      <Sidebar activePage={page} onNavigate={navigate} />
+      <Sidebar 
+        activePage={page === 'home' ? (tab === 'outfits' ? 'outfits' : 'home') : page} 
+        onNavigate={navigate} 
+      />
 
       <div className="main-area">
         <Topbar onOpenCart={() => setCartOpen(true)} onNavigate={navigate} />
@@ -80,9 +94,16 @@ function AppShell() {
                 </button>
               </div>
 
-              {tab === 'chat' && <ChatInterface onAddToCart={handleAddToCart} onAutonomousCheckout={handleAutonomousCheckout} onNavigate={navigate} />}
-              {tab === 'outfits' && <OutfitStudio onAddToCart={handleAddToCart} onAutonomousCheckout={handleAutonomousCheckout} onNavigate={navigate} />}
-              {tab === 'search' && <SearchPage onAddToCart={handleAddToCart} onAutonomousCheckout={handleAutonomousCheckout} />}
+              {/* Persistent Views: Keeping all 3 views mounted preserves complete chat history, state, and scroll position */}
+              <div style={{ display: tab === 'chat' ? 'block' : 'none' }}>
+                <ChatInterface onAddToCart={handleAddToCart} onAutonomousCheckout={handleAutonomousCheckout} onNavigate={navigate} />
+              </div>
+              <div style={{ display: tab === 'outfits' ? 'block' : 'none' }}>
+                <OutfitStudio onAddToCart={handleAddToCart} onAutonomousCheckout={handleAutonomousCheckout} onNavigate={navigate} />
+              </div>
+              <div style={{ display: tab === 'search' ? 'block' : 'none' }}>
+                <SearchPage onAddToCart={handleAddToCart} onAutonomousCheckout={handleAutonomousCheckout} />
+              </div>
             </div>
           )}
 

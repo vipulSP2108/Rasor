@@ -137,8 +137,9 @@ export default function ChatInterface({ onAddToCart, onAutonomousCheckout }) {
 
   useEffect(() => {
     // Auto-send when voice stops and we have input
-    if (!isListening && input.trim() && transcript) {
-      sendMessage(input)
+    const textToSend = input.trim() || transcript.trim()
+    if (!isListening && textToSend && transcript) {
+      sendMessage(textToSend)
       resetTranscript()
     }
   }, [isListening, transcript, input])
@@ -756,6 +757,21 @@ export default function ChatInterface({ onAddToCart, onAutonomousCheckout }) {
               type="button"
             >
               {isListening ? <MicOff size={16} /> : <Mic size={16} />}
+            </button>
+            <button 
+              type="button"
+              className={`chat-auto-voice-btn ${isAutoVoice ? 'active' : ''}`}
+              onClick={() => {
+                const next = !isAutoVoice
+                setIsAutoVoice(next)
+                if (next && !isListening) {
+                  startListening()
+                }
+              }}
+              title={isAutoVoice ? "Auto-Voice: ON (Continuous conversation active)" : "Auto-Voice: OFF (Click for hands-free mode)"}
+            >
+              <span className={`auto-voice-dot ${isAutoVoice ? 'active' : ''}`} />
+              <span>Auto</span>
             </button>
           </div>
 

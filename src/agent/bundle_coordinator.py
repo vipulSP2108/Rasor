@@ -372,43 +372,156 @@ class BundleCoordinator:
                 cat_products_map[key] = future.result()
 
         cat_keys = list(cat_products_map.keys())
-        if len(cat_keys) < 2:
-            if len(cat_keys) == 1 and len(cat_products_map[cat_keys[0]]) >= 2:
-                top_candidates = cat_products_map[cat_keys[0]]
-                bottom_candidates = list(cat_products_map[cat_keys[0]])
-            else:
-                return {"mode": "bundle", "status": "insufficient_categories", "bundles": []}
-        else:
-            top_candidates = cat_products_map[cat_keys[0]]
-            bottom_candidates = cat_products_map[cat_keys[1]]
+        if len(cat_keys) == 0:
+            return {"mode": "bundle", "status": "insufficient_categories", "bundles": []}
+
+        # Handle single-category / individual piece coordination (e.g. "get top-tier shirt individually")
+        if len(cat_keys) == 1:
+            candidates = cat_products_map[cat_keys[0]]
+            cat_name = _normalize_category_name(items_to_buy[0].get("category", "t-shirt"))
+            if not candidates:
+                candidates = self._fetch_candidates_parallel(
+                    categories=self.expand_macro_categories(cat_name),
+                    max_price=budget,
+                    gender=effective_gender,
+                    limit=limit_per_category,
+                    provider=active_provider
+                )
+
+            if not candidates:
+                return {"mode": "single", "status": "no_inventory", "bundles": []}
+
+            budget_candidates = [c for c in candidates if not budget or c.get("price", 0) <= budget]
+            if not budget_candidates:
+                min_p = min(c.get("price", 999) for c in candidates)
+                cat_clean = cat_name.replace("categoryenum.", "").replace(".", " ").strip().title()
+                b_val = int(round(budget)) if budget else 1500
+                return {
+                    "mode": "single",
+                    "status": "budget_too_low",
+                    "budget": budget,
+                    "min_total_required": min_p,
+                    "alternatives": {
+                        "message": f"Our closest quality {cat_clean} starts at ₹{int(round(min_p))}, exceeding your ₹{b_val} cap.",
+                        "options": [
+                            f"Adjust budget to ₹{int(round(min_p))} for a premium {cat_clean}",
+                            "Browse all available catalog options"
+                        ],
+                        "min_total": min_p
+                    },
+                    "bundles": []
+                }
+
+            valid_bundles = []
+            for c in budget_candidates:
+                valid_bundles.append({
+                    "items": [c],
+                    "total_price": c["price"],
+                    "budget_savings": round(budget - c["price"], 2) if budget else 0.0,
+                    "style_score": 0.95,
+                    "overall_rank": round(0.5 + (c.get("rating", 4.0) / 10.0), 2),
+                    "pairing_type": "standalone_hero",
+                    "sub_scores": {"versatility": 0.95, "color_harmony": 1.0},
+                    "rationale": f"Curated premium {c.get('title', 'piece')} selected for standout styling."
+                })
+            valid_bundles.sort(key=lambda x: x["overall_rank"], reverse=True)
+
+            hero = valid_bundles[0] if valid_bundles else None
+            alt = valid_bundles[1] if len(valid_bundles) > 1 else hero
+            val = sorted(valid_bundles, key=lambda x: x["budget_savings"], reverse=True)[0] if valid_bundles else hero
+
+            combos = [
+                {"id": 1, "title": "Hero Choice", "total_price": hero["total_price"], "style_score": 95, "budget_savings": hero["budget_savings"], "bundle": hero},
+            ]
+            if alt and alt != hero:
+                combos.append({"id": 2, "title": "Stylist Alternative", "total_price": alt["total_price"], "style_score": 92, "budget_savings": alt["budget_savings"], "bundle": alt})
+            if val and val != hero and val != alt:
+                combos.append({"id": 3, "title": "Best Value", "total_price": val["total_price"], "style_score": 88, "budget_savings": val["budget_savings"], "bundle": val})
+
+            return {
+                "mode": "bundle",
+                "status": "success",
+                "budget": budget,
+                "gender": effective_gender,
+                "allocated_budgets": {
+                    cat_name: budget or hero["total_price"]
+                },
+                "total_pairs_evaluated": len(budget_candidates),
+                "discarded_count": 0,
+                "valid_bundle_count": len(valid_bundles),
+                "hero_bundle": hero,
+                "alternative_bundle": alt,
+                "value_bundle": val,
+                "combos": combos,
+                "all_bundles": valid_bundles[:15],
+                "shelves": {
+                    "tops": budget_candidates,
+                    "bottoms": []
+                }
+            }
+
+        top_candidates = cat_products_map[cat_keys[0]]
+        bottom_candidates = cat_products_map[cat_keys[1]]
+
+        cat1_name = _normalize_category_name(items_to_buy[0].get("category", "t-shirt"))
+        cat2_name = _normalize_category_name(items_to_buy[1].get("category", "joggers") if len(items_to_buy) > 1 else "joggers")
 
         # 2. Check for Low Budget Edge Case ($P_min)
         if not top_candidates or not bottom_candidates:
-            # Find global minimums across store without budget cap to explain alternatives
+            # Check global catalog minimums
             min_top_price, min_bottom_price = self._find_catalog_minimums(
-                _normalize_category_name(items_to_buy[0].get("category", "t-shirt")),
-                _normalize_category_name(items_to_buy[1].get("category", "joggers")),
+                cat1_name,
+                cat2_name,
                 provider=active_provider
             )
             min_total = min_top_price + min_bottom_price
-            
-            alternatives = self._generate_low_budget_alternatives(
-                budget=budget,
-                min_total=min_total,
-                min_top=min_top_price,
-                min_bottom=min_bottom_price,
-                cat1=_normalize_category_name(items_to_buy[0].get("category", "top")),
-                cat2=_normalize_category_name(items_to_buy[1].get("category", "bottom"))
-            )
-            
-            return {
-                "mode": "bundle",
-                "status": "budget_too_low",
-                "budget": budget,
-                "min_total_required": min_total,
-                "alternatives": alternatives,
-                "bundles": []
-            }
+
+            # Only report budget_too_low IF the user's budget is genuinely below store floor
+            if budget and budget < min_total:
+                alternatives = self._generate_low_budget_alternatives(
+                    budget=budget,
+                    min_total=min_total,
+                    min_top=min_top_price,
+                    min_bottom=min_bottom_price,
+                    cat1=cat1_name,
+                    cat2=cat2_name
+                )
+                return {
+                    "mode": "bundle",
+                    "status": "budget_too_low",
+                    "budget": budget,
+                    "min_total_required": min_total,
+                    "alternatives": alternatives,
+                    "bundles": []
+                }
+
+            # If budget >= min_total, the budget is NOT too low! Sub-budgets or filters were just too restrictive.
+            # Perform a fallback unconstrained fetch up to the user's full budget
+            if not top_candidates:
+                top_candidates = self._fetch_candidates_parallel(
+                    categories=self.expand_macro_categories(cat1_name),
+                    max_price=budget,
+                    gender=effective_gender,
+                    limit=limit_per_category,
+                    provider=active_provider
+                )
+            if not bottom_candidates:
+                bottom_candidates = self._fetch_candidates_parallel(
+                    categories=self.expand_macro_categories(cat2_name),
+                    max_price=budget,
+                    gender=effective_gender,
+                    limit=limit_per_category,
+                    provider=active_provider
+                )
+
+            # If still completely empty after relaxing price, it's an inventory deficit, not a budget constraint
+            if not top_candidates or not bottom_candidates:
+                return {
+                    "mode": "bundle",
+                    "status": "insufficient_inventory",
+                    "message": f"Could not find available {cat1_name if not top_candidates else cat2_name} in stock.",
+                    "bundles": []
+                }
 
         # 3. Cartesian Pairing, Hard Gate, Gender Check, and Scoring
         valid_bundles = []
@@ -465,21 +578,76 @@ class BundleCoordinator:
                     "rationale": rationale
                 })
 
+        # If no valid bundles found within initial filters:
+        if not valid_bundles:
+            min_top = min((t["price"] for t in top_candidates), default=699.0)
+            min_bottom = min((b["price"] for b in bottom_candidates), default=899.0)
+            min_total = min_top + min_bottom
+
+            # Only return budget_too_low if lowest combination genuinely exceeds budget
+            if budget and budget < min_total:
+                alternatives = self._generate_low_budget_alternatives(
+                    budget=budget,
+                    min_total=min_total,
+                    min_top=min_top,
+                    min_bottom=min_bottom,
+                    cat1=cat1_name,
+                    cat2=cat2_name
+                )
+                return {
+                    "mode": "bundle",
+                    "status": "budget_too_low",
+                    "budget": budget,
+                    "min_total_required": min_total,
+                    "alternatives": alternatives,
+                    "bundles": []
+                }
+
+            # Otherwise, min_total <= budget! Style filtering was too strict, or pricing combinations missed.
+            # Relax pairing by sorting by lowest price to assemble valid budget-conscious combinations
+            sorted_tops = sorted(top_candidates, key=lambda x: x.get("price", 9999))
+            sorted_bottoms = sorted(bottom_candidates, key=lambda x: x.get("price", 9999))
+
+            for t in sorted_tops:
+                for b in sorted_bottoms:
+                    if t.get("id") and b.get("id") and t["id"] == b["id"]:
+                        continue
+                    if not check_gender_compatibility(t, b):
+                        continue
+                    total_p = t.get("price", 0) + b.get("price", 0)
+                    if budget and total_p > budget:
+                        continue
+                    eval_res = score_garment_pairing(t, b, user_skin_depth=user_skin_depth, user_undertone=user_undertone)
+                    valid_bundles.append({
+                        "items": [t, b],
+                        "total_price": total_p,
+                        "budget_savings": round(budget - total_p, 2) if budget else 0.0,
+                        "style_score": max(eval_res["total_score"], 70),
+                        "overall_rank": 0.70,
+                        "pairing_type": "stylist_curated_essentials",
+                        "sub_scores": eval_res.get("sub_scores", {}),
+                        "rationale": f"Clean coordinated pairing of {t.get('title', 'Upper')} with {b.get('title', 'Lower')} calibrated within your ₹{int(round(budget)) if budget else total_p} budget."
+                    })
+                    if len(valid_bundles) >= 5:
+                        break
+                if len(valid_bundles) >= 5:
+                    break
+
         # Sort by overall rank descending
         valid_bundles.sort(key=lambda x: x["overall_rank"], reverse=True)
 
-        # If all combinations exceeded budget:
         if not valid_bundles:
-            min_top = min(t["price"] for t in top_candidates)
-            min_bottom = min(b["price"] for b in bottom_candidates)
+            # Catalog truly cannot produce any pair under budget
+            min_top = min((t["price"] for t in top_candidates), default=699.0)
+            min_bottom = min((b["price"] for b in bottom_candidates), default=899.0)
             min_total = min_top + min_bottom
             alternatives = self._generate_low_budget_alternatives(
-                budget=budget,
+                budget=budget or min_total,
                 min_total=min_total,
                 min_top=min_top,
                 min_bottom=min_bottom,
-                cat1=items_to_buy[0].get("category", "top"),
-                cat2=items_to_buy[1].get("category", "bottom")
+                cat1=cat1_name,
+                cat2=cat2_name
             )
             return {
                 "mode": "bundle",
@@ -552,14 +720,19 @@ class BundleCoordinator:
                 "bundle": value_bundle
             })
 
+        cat1_key = _normalize_category_name(items_to_buy[0].get("category")) if len(items_to_buy) > 0 else "item_1"
+        cat2_key = _normalize_category_name(items_to_buy[1].get("category")) if len(items_to_buy) > 1 else "item_2"
+        b1_val = allocated_budgets[0] if len(allocated_budgets) > 0 else (budget or 1500.0)
+        b2_val = allocated_budgets[1] if len(allocated_budgets) > 1 else 0.0
+
         return {
             "mode": "bundle",
             "status": "success",
             "budget": budget,
             "gender": effective_gender,
             "allocated_budgets": {
-                _normalize_category_name(items_to_buy[0].get("category")): allocated_budgets[0],
-                _normalize_category_name(items_to_buy[1].get("category")): allocated_budgets[1]
+                cat1_key: b1_val,
+                cat2_key: b2_val
             },
             "total_pairs_evaluated": len(top_candidates) * len(bottom_candidates),
             "discarded_count": discarded_count,
@@ -648,21 +821,31 @@ class BundleCoordinator:
     ) -> Dict[str, Any]:
         """Generates proactive 3-path guidance for impossible budgets."""
         curr = "₹"
+        c1 = _normalize_category_name(cat1).replace("categoryenum.", "").replace(".", " ").strip()
+        c2 = _normalize_category_name(cat2).replace("categoryenum.", "").replace(".", " ").strip()
+        c1_title = c1.title() if c1 else "Upper"
+        c2_title = c2.title() if c2 else "Lower"
+
+        b_val = int(round(budget)) if budget else 1500
+        mt_val = int(round(min_total))
+        mtop_val = int(round(min_top))
+        mbot_val = int(round(min_bottom))
+
         message = (
-            f"With your budget of {curr}{budget}, getting both a quality {cat1} and {cat2} "
-            f"isn't feasible as our closest coordinated combination starts at {curr}{min_total} "
-            f"({curr}{min_top} for {cat1} + {curr}{min_bottom} for {cat2})."
+            f"With your budget of {curr}{b_val}, coordinating quality {c1_title} and {c2_title} "
+            f"pieces exceeds catalog floor prices, as our closest coordinated look starts at {curr}{mt_val} "
+            f"({curr}{mtop_val} for {c1_title} + {curr}{mbot_val} for {c2_title})."
         )
         options = [
-            f"Adjust budget to {curr}{min_total} for the complete {cat1} & {cat2} outfit",
-            f"Use your {curr}{budget} budget to get a top-tier {cat1} individually",
-            f"Use your {curr}{budget} budget to get a top-tier {cat2} individually",
-            f"Switch to a lighter combo (e.g. T-Shirt & Shorts) under {curr}{budget}"
+            f"Adjust budget to {curr}{mt_val} for the complete {c1_title} & {c2_title} outfit",
+            f"Use your {curr}{b_val} budget to get a top-tier {c1_title} individually",
+            f"Use your {curr}{b_val} budget to get a top-tier {c2_title} individually",
+            f"Switch to a lighter combo (e.g. T-Shirt & Shorts) under {curr}{b_val}"
         ]
         return {
             "message": message,
             "options": options,
-            "min_total": min_total,
-            "min_item1": min_top,
-            "min_item2": min_bottom
+            "min_total": mt_val,
+            "min_item1": mtop_val,
+            "min_item2": mbot_val
         }

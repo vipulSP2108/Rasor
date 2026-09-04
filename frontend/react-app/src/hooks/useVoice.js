@@ -117,10 +117,11 @@ export function useVoice() {
         setTranscript(latestTranscript);
 
         if (latestTranscript.trim()) {
+          // If speech is present, stop listening as soon as user takes a pause of 3 seconds
           if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
           silenceTimeoutRef.current = setTimeout(() => {
             stopListening();
-          }, 2200);
+          }, 3000);
         }
       };
 
@@ -139,9 +140,10 @@ export function useVoice() {
       recognition.start();
       setIsListening(true);
 
+      // Initial silence timeout: if nothing spoken after 10 seconds, stop listening
       silenceTimeoutRef.current = setTimeout(() => {
         stopListening();
-      }, 8000);
+      }, 10000);
     } catch (err) {
       console.warn('Failed to start speech recognition:', err);
       setIsListening(false);
