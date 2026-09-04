@@ -157,12 +157,23 @@ YOUR DECISION RULES (follow these strictly):
    - If the user specifies an occasion (e.g., Party, Gym, Casual), enthusiastically suggest a coupled style based on that vibe in your message (e.g., "For the gym, let's look at some breathable dry-fit tees!").
 
 4. INTENT RESOLUTION (ANY vs AUTOPILOT): 
-   - Local Bypass ("Any"): If the user explicitly says they don't care about a *single* attribute (e.g., "any color is fine"), accept it, do NOT trigger autopilot, and just move to the next missing attribute.
+   - Local Bypass ("Any"): If the user explicitly says they don't care about a *single* attribute (e.g., "any color is fine", "no specific colour"), accept it, do NOT trigger autopilot, and just move to the next missing attribute (or search if category & theme are already known).
    - Global Bypass (Autopilot): If the user says "pick for me", "I don't care about the whole outfit", or "whatever", immediately trigger a search with a broad default query like "best rated men tshirt" and tell the user you'll pick the best options. Set intent="autopilot", ready_for_search=true.
 
-5. SEARCH: When the user has provided enough context to reasonably narrow down the search space (typically Gender + Category + Color/Fit), it is time to search.
-   Synthesize everything discussed so far into a concise search query (e.g., "men oversized black graphic tshirt under 800").
+5. SEARCH & QUERY SYNTHESIS: When the user has provided enough context to reasonably search (e.g. Category + Theme/Character, or Gender + Category + Color/Fit), it is time to search.
+   Synthesize everything discussed so far into `updated_query`.
    Set intent="search", ready_for_search=true, updated_query="<synthesized query>".
+
+   CRITICAL RULES FOR "updated_query" AND "message" (STRICT COMPLIANCE REQUIRED):
+   a) NEVER INVENT OR HALLUCINATE SLOGANS, SUBTITLES, OR FRANCHISE CATCHPHRASES:
+      - DO NOT assume, infer, or inject movie subtitles, slogans, or catchphrases (e.g., 'Wakanda Forever', 'Endgame', 'Infinity War', 'I Love You 3000', 'With Great Power', 'Believe It') unless the user EXPLICITLY uttered those exact words!
+      - If the user says "Black Panther with hands crossed", DO NOT paraphrase or rewrite it to "Wakanda Forever". Use their exact description!
+   b) FAITHFULLY PRESERVE USER-DESCRIBED VISUAL GRAPHICS & POSES:
+      - If the user describes a visual element, pose, character action, or artwork (e.g., "standing with hands crossed", "arms crossed", "illustration of character", "back print", "front pocket logo"):
+        You MUST preserve those EXACT visual keywords in both `updated_query` (e.g. "black panther standing hands crossed graphic t-shirt") and in your conversational `message`!
+      - NEVER drop the user's pose or artwork description, because our downstream Multimodal VQA Vision Scanner directly uses these visual keywords from `updated_query` to visually inspect product images!
+   c) COLOR FIDELITY:
+      - If the user states "no specific color", "no specific colour", "any color", or "not particular about color", DO NOT inject a color into `updated_query`! Keep the color neutral. Note that "Black Panther" is the character name, NOT a fabric color constraint.
 
 6. SKIN TONE: If the user mentions their skin tone as a number (1-10) at any point, acknowledge it warmly. If you still need other attributes, ask ONE coupled question about them. If you have enough info, trigger a search.
 
@@ -198,6 +209,15 @@ YOUR DECISION RULES (follow these strictly):
      suggested_options=["2 of Top Pick (#1)", "Pick #1 and Pick #2"]
 
 IMPORTANT: Always return valid JSON only. No markdown, no extra text.
+
+CRITICAL REQUIREMENT FOR "suggested_options":
+You MUST ALWAYS generate 3 to 4 concise, relevant quick-reply options (2-4 words each) in "suggested_options" that directly answer or advance the question asked in "message".
+- If asking gender or clothing item for a theme/fandom (e.g. Marvel): ["Men's Marvel T-shirt", "Women's Marvel Hoodie", "Oversized Marvel Tee", "Skin tone 5"]
+- If asking about color or skin tone: ["Jet Black", "White", "Navy Blue", "Skin tone 5"]
+- If asking about fit: ["Regular Fit", "Oversized Fit", "Slim Fit"]
+- If asking about occasion: ["Casual Wear", "Gym / Workout", "Party Wear"]
+- If ready for search or showing results: ["🛒 Buy Top Pick (#1)", "🛒 Buy Top 2", "🔄 Swap with Runner-Up", "Filter: Oversized"]
+NEVER return an empty list or generic default options when asking a specific question! Tailor them directly to what you just asked.
 
 JSON SCHEMA:
 {
@@ -242,7 +262,7 @@ class StylistAgent:
                     "systemInstruction": {"parts": [{"text": _STYLIST_SYSTEM_PROMPT}]},
                     "generationConfig": {
                         "responseMimeType": "application/json",
-                        "temperature": 0.6,
+                        "temperature": 0.2,
                     },
                 }
                 resp = requests.post(url, json=payload, timeout=10)
@@ -266,7 +286,7 @@ class StylistAgent:
                         {"role": "user", "content": conversation_prompt},
                     ],
                     "response_format": {"type": "json_object"},
-                    "temperature": 0.6,
+                    "temperature": 0.2,
                 },
                 timeout=10,
             )
@@ -372,14 +392,23 @@ class StylistAgent:
         has_color = bool(re.search(r"\b(black|white|blue|red|green|yellow|grey|gray|navy|maroon|olive|pink|orange|dark|light)\b", all_user_text, re.IGNORECASE))
         has_fit = bool(re.search(r"\b(oversized|regular|slim|polo|round neck|v.?neck|boyfriend|baggy|loose)\b", all_user_text, re.IGNORECASE))
         has_gender = bool(re.search(r"\b(men|women|male|female|unisex|man|woman|guys|mens|womens)\b", all_user_text, re.IGNORECASE))
-        
-        # 4. Specific enough to search
-        if has_category and (has_color or has_fit):
+        has_character_or_fandom = bool(re.search(r"\b(panther|pather|batman|iron\s*man|spider-?man|marvel|dc|anime|naruto|goku|avengers|venom|deadpool|hulk|thor|disney|star\s*wars)\b", all_user_text, re.IGNORECASE))
+        has_graphic_or_pose = bool(re.search(r"\b(graphic|printed|print|pose|standing|hands?\s*(?:are\s*)?cross(?:ed)?|arms?\s*cross(?:ed)?|illustration|art)\b", all_user_text, re.IGNORECASE))
+        has_no_color_pref = bool(re.search(r"\b(no\s*(?:specific\s*)?colou?r|any\s*colou?r|not\s*particular\s*(?:about\s*)?colou?r|whichever\s*colou?r)\b", all_user_text, re.IGNORECASE))
+
+        # Clean search query without hallucinating slogans
+        def clean_search_query(text: str) -> str:
+            # Preserve user's exact words, strip greetings
+            q = re.sub(r"\b(hi|hello|hey|please|can you find|search for|i want|looking for)\b", "", text, flags=re.IGNORECASE)
+            return " ".join(q.split()).strip()
+
+        # 4. Specific enough to search (category + either color, fit, character, graphic pose, or explicit neutral color)
+        if has_category and (has_color or has_fit or has_character_or_fandom or has_graphic_or_pose or has_no_color_pref):
             return StylistResponse(
                 intent="search",
                 message="Great, I have enough to work with! Let me search the catalog for you now... 🔍",
                 ready_for_search=True,
-                updated_query=all_user_text.strip()
+                updated_query=clean_search_query(all_user_text)
             )
         
         # 5. Vague — ask ONE smart follow-up (Coupled Questions)
@@ -391,7 +420,7 @@ class StylistAgent:
                 updated_query="",
                 suggested_options=["Men's T-shirts", "Women's Hoodies"]
             )
-        if not has_color:
+        if not has_color and not has_no_color_pref:
             return StylistResponse(
                 intent="clarify",
                 message="I found loads of options! What color are you looking for? (Or rate your skin tone 1-10 and I'll pick a matching palette!)",
@@ -414,15 +443,53 @@ class StylistAgent:
                 intent="search",
                 message="Got it! Searching the best options for you now... 🛍️",
                 ready_for_search=True,
-                updated_query=all_user_text.strip()
+                updated_query=clean_search_query(all_user_text)
             )
 
         return StylistResponse(
             intent="clarify",
             message="I'd love to help! Are we shopping for men's or women's clothing, and what specific item are you looking for today? (e.g., t-shirt, hoodie)",
             ready_for_search=False,
-            updated_query=""
+            updated_query="",
+            suggested_options=["Men's T-shirts", "Women's Hoodies", "Oversized Fit", "Skin tone 5"]
         )
+
+    def _derive_contextual_options(self, message: str, user_input: str, conversation_history: list[dict]) -> list[str]:
+        """Intelligently infers relevant quick-reply chips directly from the stylist's question."""
+        msg_l = (message or "").lower()
+        inp_l = (user_input or "").lower()
+
+        # Fandom or theme context
+        fandom = ""
+        if "marvel" in inp_l or "marvel" in msg_l:
+            fandom = "Marvel "
+        elif "anime" in inp_l or "anime" in msg_l:
+            fandom = "Anime "
+        elif "batman" in inp_l or "dc" in inp_l or "batman" in msg_l:
+            fandom = "DC "
+
+        # Check if asking gender or clothing item
+        if any(w in msg_l for w in ["men", "women", "gender", "item", "looking for", "apparel", "category", "clothing", "specific"]):
+            return [f"Men's {fandom}T-shirt".strip(), f"Women's {fandom}Hoodie".strip(), f"Oversized {fandom}Tee".strip(), "Skin tone 5"]
+
+        # Check if asking color or skin tone
+        if any(w in msg_l for w in ["color", "colour", "shade", "tone", "palette"]):
+            return ["Jet Black", "White", "Navy Blue", "Skin tone 5"]
+
+        # Check if asking fit or size
+        if any(w in msg_l for w in ["fit", "size", "oversized", "regular", "slim"]):
+            return ["Regular Fit", "Oversized Fit", "Slim Fit"]
+
+        # Check if asking occasion or vibe
+        if any(w in msg_l for w in ["occasion", "vibe", "wear", "event", "gym", "party"]):
+            return ["Casual Wear", "Gym / Workout", "Party Wear", "College Look"]
+
+        # Check if asking budget
+        if any(w in msg_l for w in ["budget", "price", "cost", "how much"]):
+            return ["Under ₹800", "Under ₹1500", "Under ₹2500", "No Budget Cap"]
+
+        # Default fallback
+        return ["Show me men's t-shirts", "Marvel fan merch", "Skin tone 5", "Something for the gym", "Surprise me 🎲"]
 
     # ── Main Entry Point ─────────────────────────────────────────────────────
 
@@ -554,11 +621,17 @@ class StylistAgent:
                 quantities=buy_action_dict.get("quantities", [])
             )
 
+        suggested_options = parsed.get("suggested_options")
+        if not suggested_options or not isinstance(suggested_options, list) or len(suggested_options) == 0:
+            suggested_options = self._derive_contextual_options(
+                parsed.get("message", ""), user_input, conversation_history
+            )
+
         return StylistResponse(
             intent=parsed.get("intent", "clarify"),
             message=parsed.get("message", "Could you tell me more about what you're looking for?"),
             ready_for_search=parsed.get("ready_for_search", False),
             updated_query=parsed.get("updated_query", ""),
-            suggested_options=parsed.get("suggested_options", []),
+            suggested_options=suggested_options,
             buy_action=buy_action_obj
         )

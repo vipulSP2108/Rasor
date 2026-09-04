@@ -84,14 +84,14 @@ def get_provider(data_source: Any):
 class SearchRequest(BaseModel):
     query: str
     data_source: str = "bewakoof_live_api"
-    primary_model: str = "gemini-2.5-flash"
+    primary_model: str = "gemini-3.1-flash-lite"
     fallback_model: str = "llama-3.3-70b-versatile"
     max_results: int = 21
     enable_deep_enrichment: bool = True
     max_deep_fetches: int = 10
     enable_vqa_scanner: bool = True
     vqa_strict_filter: bool = True
-    vqa_limit: int = 8
+    vqa_limit: int = 16
     truth_hierarchy: bool = True
     enable_semantic_engine: bool = True
     currency: str = "INR"
@@ -102,7 +102,7 @@ class ChatRequest(BaseModel):
     history: List[Dict[str, str]] = []
     session_id: str = "default"
     data_source: str = "bewakoof_live_api"
-    primary_model: str = "gemini-3.5-flash"
+    primary_model: str = "gemini-3.1-flash-lite"
     fallback_model: str = "llama-3.3-70b-versatile"
     user_location: Optional[str] = "Mumbai"
 
@@ -360,29 +360,64 @@ def search(req: SearchRequest):
 
         eval_map = {e.product_id: e for e in evaluations}
 
-        # ── Stage 4c: Dynamic VQA post-filter ──
-        # Instead of a hard 0.5 threshold (which can drop the only product in a category),
-        # we use a dynamic minimum: always keep at least MIN_SURVIVORS products.
-        # If strict 0.5 filtering leaves too few, we relax and take the top MIN_SURVIVORS instead.
+        # Multi-source Character / Entity detection for hierarchy tie-breaking
+        from src.agent.brain import get_semantic_affinity_tier, _CHARACTER_ENTITY_MAP, preprocess_prompt
+        
+        target_char_key = None
+        target_char_terms = []
+        sources_to_check = [
+            req.query.lower(),
+            preprocess_prompt(req.query, enable_semantic=False).lower(),
+        ]
+        if canonical_query:
+            if getattr(canonical_query, "cleaned_keywords", None):
+                sources_to_check.append(str(canonical_query.cleaned_keywords).lower())
+            if getattr(canonical_query, "fandom", None) and canonical_query.fandom.value != "None":
+                sources_to_check.append(str(canonical_query.fandom.value).lower())
+
+        for text_source in sources_to_check:
+            for char_key, char_terms in _CHARACTER_ENTITY_MAP.items():
+                if any(re.search(rf"\b{re.escape(term)}\b", text_source) for term in char_terms):
+                    target_char_key = char_key
+                    target_char_terms = char_terms
+                    break
+            if target_char_key:
+                break
+
+        # ── Stage 4c: Relevance & Match Score Post-filter ──
+        # Filters out conflicting character / rejected items (e.g. Venom when Black Panther was requested).
         MIN_SURVIVORS = 3
 
         def get_match_score(p):
             ev = eval_map.get(p.id)
             return ev.match_score if ev else 0.5
 
+        def is_item_relevant(p):
+            ev = eval_map.get(p.id)
+            return ev.is_relevant if ev is not None else True
+
+        # First pass: keep relevant items with match_score >= 0.45
+        strict_survivors = [p for p in validated_products if get_match_score(p) >= 0.45 and is_item_relevant(p)]
+        if len(strict_survivors) >= MIN_SURVIVORS:
+            validated_products = strict_survivors
+            print(f"[Search] Post-filter (strict >= 0.45): {len(validated_products)} survivors")
+        elif len(strict_survivors) > 0:
+            validated_products = strict_survivors
+            print(f"[Search] Post-filter (strict, {len(strict_survivors)} passed): keeping all survivors")
+        else:
+            all_scored = sorted(
+                validated_products,
+                key=lambda p: (
+                    get_match_score(p),
+                    get_semantic_affinity_tier(p, target_char_key, target_char_terms, effective_query),
+                    bayesian_score(p)
+                ),
+                reverse=True
+            )
+            validated_products = all_scored[:max(MIN_SURVIVORS, 1)]
+            print(f"[Search] Post-filter (relaxed, min_survivors={MIN_SURVIVORS}): {len(validated_products)} kept")
+
         vqa_ran = any("[VQA:" in (e.reason or "") for e in evaluations)
-        if vqa_ran:
-            # First pass: strict 0.5 threshold
-            strict_survivors = [p for p in validated_products if get_match_score(p) >= 0.5]
-            if len(strict_survivors) >= MIN_SURVIVORS:
-                # Enough passed — use strict filter
-                validated_products = strict_survivors
-                print(f"[Search] VQA post-filter (strict): {len(validated_products)} survivors")
-            else:
-                # Too few passed — relax to keep top MIN_SURVIVORS regardless of absolute score
-                all_scored = sorted(validated_products, key=get_match_score, reverse=True)
-                validated_products = all_scored[:max(MIN_SURVIVORS, len(strict_survivors))]
-                print(f"[Search] VQA post-filter (relaxed, min_survivors={MIN_SURVIVORS}): {len(validated_products)} kept")
 
         # ── Stage 5: Logistics re-rank (only on VQA/LLM survivors) ──
         # Delivery is a SECONDARY sort key within match-score tiers.
@@ -419,31 +454,33 @@ def search(req: SearchRequest):
 
         sort_mode = "relevance"
         if is_fast_shipping:
-            # ── Tier-based delivery sort ──
-            # Products are bucketed into 0.1-wide score tiers using floor().
-            # Within the same tier, fastest delivery wins.
-            # Between different tiers, higher score always wins.
-            #
-            # Example: scores [0.95, 0.92, 0.88, 0.72, 0.65]
-            #   tier(0.95) = 0.9, tier(0.92) = 0.9  →  same tier → sort by days
-            #   tier(0.88) = 0.8, tier(0.72) = 0.7, tier(0.65) = 0.6  →  own tiers
-            # Result: [0.92(1-day), 0.95(2-day), 0.88(1-day), 0.72(2-day), 0.65(1-day)]
             def tier_delivery_key(p):
                 cs = composite_score(p)
                 score_tier = _math.floor(cs * 10) / 10   # e.g. 0.95 → 0.9, 0.88 → 0.8
+                affinity = get_semantic_affinity_tier(p, target_char_key, target_char_terms, effective_query)
                 days = p.shipping_days if p.shipping_days else 99
-                return (-score_tier, days)  # desc tier, asc delivery within tier
+                return (-score_tier, -affinity, days, -bayesian_score(p))  # desc tier, desc affinity, asc delivery, desc bayesian
 
             final_list.sort(key=tier_delivery_key)
             sort_mode = "tier_delivery"
         else:
-            final_list.sort(key=composite_score, reverse=True)
+            def relevance_sort_key(p):
+                score = get_match_score(p)
+                affinity = get_semantic_affinity_tier(p, target_char_key, target_char_terms, effective_query)
+                bayes = bayesian_score(p)
+                return (score, affinity, bayes)
+
+            final_list.sort(key=relevance_sort_key, reverse=True)
 
         search_results = final_list[:config.max_search_results]
         displayed_ids = {p.id for p in search_results}
         rejected_products = [p for p in raw_products if p.id not in displayed_ids]
         rejected_products.sort(
-            key=lambda p: (eval_map[p.id].match_score if p.id in eval_map else 0.0, bayesian_score(p)),
+            key=lambda p: (
+                eval_map[p.id].match_score if p.id in eval_map else 0.0,
+                get_semantic_affinity_tier(p, target_char_key, target_char_terms, effective_query),
+                bayesian_score(p)
+            ),
             reverse=True
         )
 
@@ -494,8 +531,8 @@ def search(req: SearchRequest):
 def chat(req: ChatRequest):
     try:
         # Force upgrade legacy models sent by stale frontend state
-        if req.primary_model in ["gemini-1.5-flash", "gemini-2.5-flash"]:
-            req.primary_model = "gemini-3.5-flash"
+        if req.primary_model in ["gemini-1.5-flash", "gemini-2.5-flash", "gemini-3.5-flash"]:
+            req.primary_model = "gemini-3.1-flash-lite"
             
         if req.session_id not in _stylist_agents:
             _stylist_agents[req.session_id] = StylistAgent(
