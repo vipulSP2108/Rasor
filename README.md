@@ -41,7 +41,7 @@ flowchart TD
         direction TB
         Retrieval["📡 5-Tier Progressive Retrieval<br/>Tier 1: Structured Predicates &bull; Tier 2: Storefront Search<br/>Tier 3: Per-Term Union &bull; Tier 4: Product Type Only &bull; Tier 5: Full Catalog"]
         WAF["🛡️ Upstream Window Clamping &amp; Filter<br/>Clamps limit &le; 48 SKUs to avoid HTTP 400<br/>Filters Subclass Category Bleed"]
-        DeepPDP["🔬 Deep PDP Metadata Enrichment<br/>Parallel v2 API: Origin PIN, Fabric, Reviews"]
+        DeepPDP["🔬 Deep PDP Metadata Enrichment<br/>Parallel Enrichment Endpoint: Origin PIN, Fabric, Reviews"]
         VQACheck{"VQA Required / Strict Filter Enabled?"}
         VisionEngine["🔬 Parallel Gemini Vision VQA<br/>(ThreadPoolExecutor, 4 Workers, Max 16 Images)"]
         VQAInspect{"Vision Layout Verdict"}
@@ -463,7 +463,9 @@ Detailed technical specifications are maintained in the [`docs/`](docs/) and [`d
 | Document | Technical Scope |
 | :--- | :--- |
 | [**System Architecture Blueprint**](docs/ARCHITECTURE.md) | In-depth specification of reasoning pipelines, mathematical models, data contracts, and component state machines. |
-| [**API Specification & Protocols**](docs/API_SPECIFICATION.md) | Comprehensive REST route documentation, ACP-2026.1 protocol contracts, and AP2 JSON schemas. |
+| [**API Specification & Protocols**](docs/API_SPECIFICATION.md) | Comprehensive REST route documentation (all 35 endpoints), ACP-2026.1 protocol contracts, and AP2 JSON schemas. |
+| [**Shopify Storefront API Reference**](docs/shopify_storefront_api_reference.md) | Exhaustive technical reference for Shopify Storefront GraphQL API (2024-04), scopes, queries, and headless cart mutations. |
+| [**Shopify Headless Commerce Integration**](docs/shopify_investigation.md) | Architectural reference detailing the transition from upstream scrapers to headless GraphQL & REST settlement. |
 | [**Engineering Challenges & Post-Mortem**](docs/CHALLENGES_AND_POSTMORTEM.md) | Technical analysis of upstream WAF mitigations, closed-loop checkout roadblocks, receipt length bounds, and storage pruning. |
 | [**Technical Advantages & Evaluation Guide**](docs/PRESENTATION_AND_SECRET_WEAPONS.md) | Architectural benchmark comparisons against standard conversational bots and traditional checkout systems. |
 | [**Outfit Studio & Bundle Coordinator Reference**](docs2/sub_docs/OUTFIT_STUDIO_AND_BUNDLE_COORDINATOR.md) | Mathematical budget allocation, Cartesian outfit pairing, and 3-combo synthesis specification. |
@@ -483,9 +485,12 @@ Detailed technical specifications are maintained in the [`docs/`](docs/) and [`d
 
 ### 4.2 Setup & Configuration
 Clone repository and initialize environment:
-```sh
+```bash
+# Clone the repository
 git clone https://github.com/vipulSP2108/Rasor.git
 cd Rasor
+
+# Create local environment configuration
 cp .env.example .env
 ```
 
@@ -504,14 +509,18 @@ SHOPIFY_DOMAIN=rasor-test-store-1.myshopify.com
 SHOPIFY_STOREFRONT_TOKEN=...
 SHOPIFY_ADMIN_TOKEN=shpat_...
 
-# Real-Time PDP Enrichment Endpoints (Bewakoof)
+# Upstream Catalog & Enrichment Gateway (Encapsulated in .env)
+BEWAKOOF_API_BASE_URL=https://api-prod.your-store-domain.com
+BEWAKOOF_COLLECTION_ENDPOINT=/v1/collections/your-collection-path
+BEWAKOOF_PDP_ENDPOINT=/v2/product-endpoint
 BEWAKOOF_API_TOKEN=your_upstream_api_token
-BEWAKOOF_CLIENT_DEVICE_TOKEN=...
+BEWAKOOF_CLIENT_DEVICE_TOKEN=your_client_device_token
 ```
 
 ### 4.3 Automated Startup
 Launch both the FastAPI backend and React frontend with a single command:
-```sh
+```bash
+# Grant execution permissions and launch both servers
 chmod +x start.sh
 ./start.sh
 ```
@@ -519,7 +528,10 @@ chmod +x start.sh
 Service endpoints:
 * React UI: `http://localhost:5173`
 * FastAPI Backend: `http://localhost:8000`
-* OpenAPI Documentation: `http://localhost:8000/docs`
+* Interactive OpenAPI Documentation (Swagger UI): [`http://localhost:8000/docs`](http://localhost:8000/docs)
+* Modern Interactive API Reference (Scalar): [`http://localhost:8000/scalar`](http://localhost:8000/scalar)
+* Complete API Specification & Protocols: [**`docs/API_SPECIFICATION.md`**](docs/API_SPECIFICATION.md)
+* Headless Storefront API Reference: [**`docs/shopify_storefront_api_reference.md`**](docs/shopify_storefront_api_reference.md)
 
 ---
 
@@ -529,14 +541,14 @@ Service endpoints:
 We explicitly acknowledge **Bewakoof.com** for their catalog taxonomies, merchandising structures, and product design assets.
 
 > [!NOTE]
-> **Educational & Learning Disclaimer:** This project was developed strictly as an academic research prototype for the Razorpay Agentic Commerce Hackathon. The platform has no formal commercial affiliation with or endorsement from Bewakoof.com. All catalog structures and metadata endpoints were evaluated solely for non-commercial educational benchmarking under fair use.
+> **Educational & Learning Disclaimer:** This project was developed strictly as an academic research prototype for the Razorpay Agentic Commerce Hackathon. The platform has no formal commercial affiliation with or endorsement from Bewakoof.com. All catalog structures and metadata endpoints were evaluated solely for non-commercial educational benchmarking under fair use, with internal routes encapsulated inside environment variables.
 
 ### Evolution from Overlay to Headless Shopify Settlement
-1. **Initial Exploration:** The system was originally prototyped as an agentic overlay interacting directly with merchant mobile endpoints (`/v1/collections/...` and `/v2/product/{pid}`).
-2. **Checkout Roadblock:** While discovery endpoints provided detailed product metadata, Bewakoof's native cart and checkout flows are session-locked and closed-loop, lacking open APIs for programmatic third-party AP2 settlement.
+1. **Initial Exploration:** The system was originally prototyped as an agentic overlay interacting directly with open upstream mobile catalog and PDP enrichment endpoints (encapsulated via `BEWAKOOF_API_BASE_URL` in `.env`).
+2. **Checkout Roadblock:** While discovery endpoints provided detailed product metadata, native cart and checkout flows on the upstream merchant are session-locked and closed-loop, lacking open APIs for programmatic third-party AP2 settlement.
 3. **Hybrid Architecture Resolution:**
    - Catalog data was imported into a dedicated Shopify instance via `shopify_import.csv` to provide headless GraphQL cart mutations and Admin REST order creation (`financial_status: paid`).
-   - Live Bewakoof mobile endpoints are retained in a hybrid pipeline to dynamically enrich products with manufacturer specs, wash care instructions, live customer ratings, and warehouse origin PIN codes used by the geodesic logistics engine.
+   - Upstream mobile enrichment endpoints are retained in a hybrid pipeline to dynamically enrich products with manufacturer specs, wash care instructions, live customer ratings, and warehouse origin PIN codes used by the geodesic logistics engine.
 
 ---
 

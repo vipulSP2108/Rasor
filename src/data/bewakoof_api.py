@@ -12,6 +12,9 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 import requests
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from src.agent.state import Product
 from src.data.base import BaseCatalogProvider
@@ -79,8 +82,11 @@ class BewakoofCatalogProvider(BaseCatalogProvider):
         client_device_token: Optional[str] = None,
         fallback_provider: Optional[BaseCatalogProvider] = None,
     ):
-        self.api_token = api_token or os.getenv("BEWAKOOF_API_TOKEN", _DEFAULT_TOKEN)
+        self.api_token = api_token or os.getenv("BEWAKOOF_API_TOKEN", "")
         self.client_device_token = client_device_token or os.getenv("BEWAKOOF_CLIENT_DEVICE_TOKEN", self.api_token)
+        self.base_url = (os.getenv("BEWAKOOF_API_BASE_URL") or "").rstrip("/")
+        self.collection_endpoint = (os.getenv("BEWAKOOF_COLLECTION_ENDPOINT") or "").strip("/")
+        self.pdp_endpoint = (os.getenv("BEWAKOOF_PDP_ENDPOINT") or "").strip("/")
         self.mapper = UniversalProductMapper(field_map=BEWAKOOF_FIELD_MAP)
         self.last_status_message: str = "Initialized"
         self.last_used_source: str = "bewakoof_live_api"
@@ -114,13 +120,15 @@ class BewakoofCatalogProvider(BaseCatalogProvider):
 
     def _fetch_collection(self, handle: str, fetch_limit: int = 60) -> List[Dict[str, Any]]:
         """Fetches raw products from a single collection handle."""
+        if not self.base_url or not self.collection_endpoint:
+            return []
         product_fields = (
             "id,name,url,mrp,price,display_image,in_stock,status,"
             "gender,color_name,product_attributes,product_sizes,"
             "cat_designer,offer_tags,subclass,category_info,member_price,ratings_avg,ratings_count"
         )
         url = (
-            f"{os.getenv('BEWAKOOF_API_BASE_URL', '')}{os.getenv('BEWAKOOF_COLLECTION_ENDPOINT', '')}/{handle}"
+            f"{self.base_url}/{self.collection_endpoint}/{handle}"
             f"?qf=true&sort=popular&page=1&limit={fetch_limit}&fields=results"
             f"&product_fields={product_fields}"
         )
@@ -354,14 +362,18 @@ class BewakoofCatalogProvider(BaseCatalogProvider):
         raw_pid = product.specs.get("bewakoof_id") or product.id
         pid = str(raw_pid).split("-")[-1] if "-" in str(raw_pid) else str(raw_pid)
         
-        # 1. Check in-memory cache first to avoid repeating /v2/product/{pid} calls
+        # 1. Check in-memory cache first to avoid repeating upstream PDP enrichment calls
         if pid in _DEEP_ENRICHMENT_CACHE:
             data = _DEEP_ENRICHMENT_CACHE[pid]
             self._apply_enrichment_data(product, data)
             product.enriched = True
             return product
 
-        url = f"{os.getenv('BEWAKOOF_API_BASE_URL', '')}{os.getenv('BEWAKOOF_PDP_ENDPOINT', '')}/{pid}"
+        if not self.base_url or not self.pdp_endpoint:
+            product.enriched = True
+            return product
+
+        url = f"{self.base_url}/{self.pdp_endpoint}/{pid}"
         delay = 0.3
         max_delay = 1.5
         

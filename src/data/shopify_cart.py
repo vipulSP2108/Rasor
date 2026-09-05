@@ -9,8 +9,12 @@ SHOPIFY_API_VERSION = "2024-04"
 class ShopifyCartProvider:
     """Handles cart operations using Shopify Storefront API."""
     def __init__(self):
-        self.domain = os.getenv("SHOPIFY_DOMAIN", "")
-        self.storefront_token = os.getenv("SHOPIFY_STOREFRONT_TOKEN", "")
+        self.domain = os.getenv("SHOPIFY_DOMAIN", "rasor-test-store-1.myshopify.com")
+        self.storefront_token = (
+            os.getenv("SHOPIFY_STOREFRONT_TOKEN")
+            or os.getenv("SHOPIFY_STOREFRONT_ACCESS_TOKEN")
+            or "6a1c1b2f3f1fafd8afc7040ed4e19307"
+        )
         if not self.domain or not self.storefront_token:
             raise ValueError("Missing SHOPIFY_DOMAIN or SHOPIFY_STOREFRONT_TOKEN in env")
 

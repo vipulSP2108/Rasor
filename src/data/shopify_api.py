@@ -94,8 +94,12 @@ class ShopifyCatalogProvider(BaseCatalogProvider):
     """
 
     def __init__(self):
-        self.domain = os.getenv("SHOPIFY_DOMAIN", "")
-        self.token = os.getenv("SHOPIFY_STOREFRONT_TOKEN", "")
+        self.domain = os.getenv("SHOPIFY_DOMAIN", "rasor-test-store-1.myshopify.com")
+        self.token = (
+            os.getenv("SHOPIFY_STOREFRONT_TOKEN")
+            or os.getenv("SHOPIFY_STOREFRONT_ACCESS_TOKEN")
+            or "6a1c1b2f3f1fafd8afc7040ed4e19307"
+        )
 
         if not self.domain or not self.token:
             print("[Shopify] WARNING: Missing SHOPIFY_DOMAIN or SHOPIFY_STOREFRONT_TOKEN in .env")
@@ -491,7 +495,12 @@ class ShopifyCatalogProvider(BaseCatalogProvider):
                 if desc and isinstance(desc, dict):
                     product.rich_description = desc.get("heading")
             else:
-                url = f"{os.getenv('BEWAKOOF_API_BASE_URL', '')}{os.getenv('BEWAKOOF_PDP_ENDPOINT', '')}/{bewakoof_id}"
+                base_url = (os.getenv("BEWAKOOF_API_BASE_URL") or "").rstrip("/")
+                pdp_endpoint = (os.getenv("BEWAKOOF_PDP_ENDPOINT") or "").strip("/")
+                if not base_url or not pdp_endpoint:
+                    product.enriched = True
+                    return product
+                url = f"{base_url}/{pdp_endpoint}/{bewakoof_id}"
                 headers = {
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
                     "App": "ios"
