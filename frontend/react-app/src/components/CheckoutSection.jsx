@@ -83,6 +83,7 @@ export default function CheckoutSection({
   }, [cart])
 
   const activeCartProductsRef = useRef(getCartProducts(cart))
+  const isCartDrawerTestRef = useRef(false)
 
   useEffect(() => {
     if (!isOosSwappingRef.current) {
@@ -351,7 +352,7 @@ export default function CheckoutSection({
               clearInterval(interval)
               localStorage.removeItem('rasor_active_plink')
               toast.dismiss('verify')
-              await handlePostPaymentCollision(mobileRescueData.plink_id, mobileRescueData.plink_id, 'Tier 4 (Mobile Rescue Link)', collisionCount, activeProducts)
+              await handlePostPaymentCollision(mobileRescueData.plink_id, mobileRescueData.plink_id, 'Tier 4 (Mobile Rescue Link)', collisionCount, activeProducts, true)
               return
             }
 
@@ -444,7 +445,7 @@ export default function CheckoutSection({
 
             const collisionCount = consumePostPaymentCollision()
             if (collisionCount > 0) {
-              await handlePostPaymentCollision(response.razorpay_payment_id, data.order_id, 'Standard Checkout', collisionCount, activeProducts)
+              await handlePostPaymentCollision(response.razorpay_payment_id, data.order_id, 'Standard Checkout', collisionCount, activeProducts, true)
               return
             }
 
@@ -548,7 +549,7 @@ export default function CheckoutSection({
             const collisionCount = consumePostPaymentCollision()
             if (collisionCount > 0) {
               toast.dismiss('mandate-verify')
-              await handlePostPaymentCollision(response.razorpay_payment_id, orderId, 'Demo 1 (Mandate Setup)', collisionCount, activeProducts)
+              await handlePostPaymentCollision(response.razorpay_payment_id, orderId, 'Demo 1 (Mandate Setup)', collisionCount, activeProducts, true)
               return
             }
 
@@ -914,6 +915,10 @@ export default function CheckoutSection({
         ? e.detail.postCount
         : (simulatedPostPaymentCount > 0 ? simulatedPostPaymentCount : (simulatePostPaymentOos ? 1 : 0))
 
+      if (e.detail?.source === 'cart_drawer') {
+        isCartDrawerTestRef.current = true
+      }
+
       postPaymentRemainingRef.current = postCount
       setSimulatedPostPaymentCount(postCount)
       setSimulatePostPaymentOos(postCount > 0)
@@ -929,6 +934,7 @@ export default function CheckoutSection({
   }, [simulatedOosCount, cart, candidateBuffer, setSimulatedPostPaymentCount, setSimulatePostPaymentOos])
 
   const handleStartCascade = async () => {
+    isCartDrawerTestRef.current = false
     // If simulated OOS failures are configured, intercept and run the OOS failover cascade first!
     const targetOos = simulatedOosRemaining > 0 ? simulatedOosRemaining : (simulatedOosCount > 0 ? simulatedOosCount : 0)
     const currentItems = (activeCartProductsRef.current && activeCartProductsRef.current.length > 0)
@@ -1262,7 +1268,7 @@ export default function CheckoutSection({
   }, [autoStartCascade])
 
   // ── Post-Payment Inventory Collision & Autonomous Refund Recovery ───
-  const handlePostPaymentCollision = async (paymentId, orderId, railName = 'Payment Rail', count = null, liveProducts = null) => {
+  const handlePostPaymentCollision = async (paymentId, orderId, railName = 'Payment Rail', count = null, liveProducts = null, forceShowModal = false) => {
     toast.dismiss('cascade-verify')
     toast.dismiss('mandate-verify')
     toast.dismiss('verify')
@@ -1313,6 +1319,43 @@ export default function CheckoutSection({
     toast.dismiss('post-verify')
     const activeTotal = currentProducts.reduce((sum, item) => sum + (item.price * (item.qty || 1)), 0)
     const isFullRefund = collidingTotal >= activeTotal
+
+    // Clean up collision flags
+    postPaymentRemainingRef.current = 0
+    setSimulatedPostPaymentCount(0)
+    setSimulatePostPaymentOos(false)
+    try {
+      sessionStorage.setItem('rasor_simulate_post_payment_count', '0')
+      sessionStorage.setItem('rasor_simulate_post_payment_oos', 'false')
+    } catch (e) {}
+
+    setIsRescueModuleActive(false)
+    try {
+      localStorage.removeItem('rasor_cascade_state')
+      localStorage.setItem('rasor_rescue_module_active', 'false')
+    } catch (e) {}
+
+    // In Demo 3 (Multi-Rail Failover Cascade), the call is automated with no human present:
+    // Direct start from fallback runner-up without popping up the 1-Click modal!
+    const isDemo3Automated = (demoMode === 'cascade_failover' || demoMode === 'failover') && !forceShowModal && !isCartDrawerTestRef.current
+
+    if (isDemo3Automated && primaryRunnerUp) {
+      isCartDrawerTestRef.current = false
+      toast.error(`🚨 POST-PAYMENT COLLISION: "${collidingItems[0]?.title?.slice(0, 20)}..." ${numColliding > 1 ? `(+${numColliding - 1} more) ` : ''}sold out during confirmation! Autonomous ${isFullRefund ? '100%' : curr + collidingTotal.toFixed(0)} refund issued.`, { id: 'post-refund-alert', duration: 7000 })
+      
+      toast.loading(`⚡ Demo 3 Autonomous Mode: Direct start from fallback runner-up "${primaryRunnerUp.title?.slice(0, 20)}..."...`, { id: 'direct-fallback', duration: 4000 })
+
+      await speakAsync(`Post-payment collision alert: ${numColliding > 1 ? numColliding + ' items were' : collidingItems[0]?.title + ' was'} depleted during checkout confirmation. Autonomous refund of ${curr}${collidingTotal.toFixed(0)} issued. Since Demo 3 is automated with no user present, directly restarting cascade from fallback runner-up now.`, { category: 'postRefund' })
+
+      await new Promise(r => setTimeout(r, 600))
+      toast.dismiss('direct-fallback')
+      await handleReorderWithRunnerUp(primaryRunnerUp)
+      return
+    }
+
+    // For Demo 1 (Human Present), Standard Checkout, or CartDrawer interactive test:
+    // Show side-by-side modal with "1-Click Reorder" button for explicit human confirmation!
+    isCartDrawerTestRef.current = false
     toast.error(`🚨 POST-PAYMENT COLLISION: "${collidingItems[0]?.title?.slice(0, 20)}..." ${numColliding > 1 ? `(+${numColliding - 1} more) ` : ''}sold out during confirmation! Autonomous ${isFullRefund ? '100%' : curr + collidingTotal.toFixed(0)} refund issued.`, { id: 'post-refund-alert', duration: 8000 })
 
     await speakAsync(`Post-payment collision alert: ${numColliding > 1 ? numColliding + ' items were' : collidingItems[0]?.title + ' was'} depleted during checkout confirmation. The autonomous agent has automatically triggered an instant refund of ${curr}${collidingTotal.toFixed(0)} via Razorpay.`, { category: 'postRefund' })
@@ -1331,20 +1374,6 @@ export default function CheckoutSection({
       runnerUps: matchingRunnerUps,
       runnerUp: primaryRunnerUp
     })
-
-    postPaymentRemainingRef.current = 0
-    setSimulatedPostPaymentCount(0)
-    setSimulatePostPaymentOos(false)
-    try {
-      sessionStorage.setItem('rasor_simulate_post_payment_count', '0')
-      sessionStorage.setItem('rasor_simulate_post_payment_oos', 'false')
-    } catch (e) {}
-
-    setIsRescueModuleActive(false)
-    try {
-      localStorage.removeItem('rasor_cascade_state')
-      localStorage.setItem('rasor_rescue_module_active', 'false')
-    } catch (e) {}
   }
 
   const handleReorderWithRunnerUp = async (runnerUp) => {
@@ -1354,6 +1383,7 @@ export default function CheckoutSection({
     toast.dismiss('cascade-verify')
     toast.dismiss('post-verify')
     toast.dismiss('post-refund-alert')
+    toast.dismiss('direct-fallback')
     toast.dismiss('mandate-verify')
     toast.dismiss('verify')
 
@@ -1378,17 +1408,18 @@ export default function CheckoutSection({
     if (oldItem) removeFromCart(oldItem.id)
     addToCartLocal(runnerUp, 1)
 
-    const updated = [{ ...runnerUp, qty: 1 }]
+    const remainingItems = currentProducts.slice(1)
+    const updated = [{ ...runnerUp, qty: 1 }, ...remainingItems]
     activeCartProductsRef.current = updated
 
-    const reorderPayload = [{
-      product_id: runnerUp.id,
-      title: runnerUp.title,
-      merchant: runnerUp.merchant || 'Rasor',
-      unit_price: runnerUp.price,
-      quantity: 1
-    }]
-    const newTotal = runnerUp.price
+    const reorderPayload = updated.map(p => ({
+      product_id: p.id,
+      title: p.title,
+      merchant: p.merchant || 'Rasor',
+      unit_price: p.price,
+      quantity: p.qty || 1
+    }))
+    const newTotal = updated.reduce((sum, p) => sum + (p.price * (p.qty || 1)), 0)
 
     await speakAsync(`Reordering with runner-up ${runnerUp.title}. Creating fresh checkout order now.`, { category: 'inventoryOos' })
     toast.loading(`Creating fresh Razorpay order for "${runnerUp.title.slice(0, 18)}..."...`, { id: 'reorder-create' })
@@ -2175,7 +2206,7 @@ export default function CheckoutSection({
                   onClick={() => {
                     const simPayId = `pay_sim_post_${Date.now().toString(36)}`
                     const simOrdId = activeOrderId || `order_sim_${Date.now().toString(36)}`
-                    handlePostPaymentCollision(simPayId, simOrdId, 'Simulated Capture Rail', simulatedPostPaymentCount || 1, activeCartProductsRef.current)
+                    handlePostPaymentCollision(simPayId, simOrdId, 'Simulated Capture Rail', simulatedPostPaymentCount || 1, activeCartProductsRef.current, true)
                   }}
                 >
                   <ShieldAlert size={12} color="#f87171" />

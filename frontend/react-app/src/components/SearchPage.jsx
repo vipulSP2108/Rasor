@@ -8,7 +8,7 @@ import BatchedProductGrid from './BatchedProductGrid'
 import toast from 'react-hot-toast'
 
 const QUICK_SEARCHES = [
-  'Black oversized t-shirt',
+  'Black oversized men\'s t-shirt under 799',
   'Marvel graphic tee',
   'Gym dry-fit top',
   'Polo shirts for men',

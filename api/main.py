@@ -2574,10 +2574,12 @@ class BundleCoordinateRequest(BaseModel):
     budget: float = Field(default=2500.0, description="Target total budget cap")
     items_to_buy: List[Dict[str, Any]] = Field(default_factory=list, description="Explicit items to purchase with categories, colors, designs")
     owned_items: List[Dict[str, Any]] = Field(default_factory=list, description="User owned wardrobe anchor pieces")
-    user_skin_depth: int = Field(default=5, ge=1, le=10, description="Skin depth rating 1-10")
-    user_undertone: str = Field(default="Neutral", description="Cool, Warm, or Neutral")
+    user_skin_depth: Optional[int] = Field(default=5, ge=1, le=10, description="Skin depth rating 1-10")
+    user_undertone: Optional[str] = Field(default="Neutral", description="Cool, Warm, or Neutral")
     gender: str = Field(default="men", description="Target gender")
     data_source: str = Field(default="shopify_storefront_live_api", description="Data catalog provider")
+    top_size: Optional[str] = Field(default=None, description="Preferred top size (e.g. M, L, XL)")
+    bottom_size: Optional[str] = Field(default=None, description="Preferred bottom waist size (e.g. 30, 32, 34)")
 
     model_config = {
         "json_schema_extra": {
@@ -2593,7 +2595,9 @@ class BundleCoordinateRequest(BaseModel):
                 "user_skin_depth": 5,
                 "user_undertone": "Neutral",
                 "gender": "men",
-                "data_source": "shopify_storefront_live_api"
+                "data_source": "shopify_storefront_live_api",
+                "top_size": "XL",
+                "bottom_size": "34"
             }
         }
     }
@@ -2602,8 +2606,8 @@ class OutfitMatchRequest(BaseModel):
     owned_item: Dict[str, Any] = Field(description="Owned wardrobe item dictionary with title, category, color, fit, specs")
     target_category: str = Field(default="t-shirt", description="Target category to search and pair with owned item")
     budget: float = Field(default=1800.0, description="Target budget for complementary piece")
-    user_skin_depth: int = Field(default=6, ge=1, le=10, description="Skin depth 1-10")
-    user_undertone: str = Field(default="Warm", description="Skin undertone")
+    user_skin_depth: Optional[int] = Field(default=6, ge=1, le=10, description="Skin depth 1-10")
+    user_undertone: Optional[str] = Field(default="Warm", description="Skin undertone")
     gender: str = Field(default="men", description="Target gender")
     data_source: str = Field(default="shopify_storefront_live_api", description="Data catalog provider")
 
@@ -2650,6 +2654,9 @@ def coordinate_bundle(req: BundleCoordinateRequest):
         
         items_to_buy = req.items_to_buy or []
         owned_items = req.owned_items or []
+
+        skin_depth = req.user_skin_depth if req.user_skin_depth is not None else 5
+        undertone = req.user_undertone if req.user_undertone is not None else "Neutral"
         
         if not items_to_buy and not owned_items and req.query:
             brain = AgentBrain()
@@ -2663,11 +2670,16 @@ def coordinate_bundle(req: BundleCoordinateRequest):
             budget=req.budget,
             items_to_buy=items_to_buy,
             owned_items=owned_items,
-            user_skin_depth=req.user_skin_depth,
-            user_undertone=req.user_undertone,
+            user_skin_depth=skin_depth,
+            user_undertone=undertone,
             gender=req.gender,
             provider=provider
         )
+        if isinstance(result, dict):
+            if req.top_size:
+                result["initialTopSize"] = req.top_size
+            if req.bottom_size:
+                result["initialBottomSize"] = req.bottom_size
         return result
     except Exception as e:
         traceback.print_exc()
@@ -2679,14 +2691,17 @@ def match_outfit(req: OutfitMatchRequest):
         from src.agent.bundle_coordinator import BundleCoordinator
         provider = get_provider(req.data_source)
         coordinator = BundleCoordinator(catalog_provider=provider)
+
+        skin_depth = req.user_skin_depth if req.user_skin_depth is not None else 6
+        undertone = req.user_undertone if req.user_undertone is not None else "Warm"
         
         result = coordinator.coordinate_bundle(
             query="",
             budget=req.budget,
             items_to_buy=[{"category": req.target_category}],
             owned_items=[req.owned_item],
-            user_skin_depth=req.user_skin_depth,
-            user_undertone=req.user_undertone,
+            user_skin_depth=skin_depth,
+            user_undertone=undertone,
             gender=req.gender,
             provider=provider
         )

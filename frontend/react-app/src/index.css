@@ -2687,6 +2687,16 @@ body {
   margin-top: 20px;
 }
 
+.suite-pieces-split-layout.three-pieces {
+  grid-template-columns: 1fr auto 1fr auto 1fr;
+}
+
+@media (max-width: 960px) {
+  .suite-pieces-split-layout.three-pieces {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 768px) {
   .suite-pieces-split-layout {
     grid-template-columns: 1fr;

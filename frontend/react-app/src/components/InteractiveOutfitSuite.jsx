@@ -206,7 +206,7 @@ function MultiBundleCoordinatorView({ bundleData, onAddToCart, onAutonomousCheck
     // Strict Budget Gate (D-08): All bundles must satisfy total_price <= budget
     if (currentBudget > 0) {
       const budgetPassing = list.filter(b => {
-        const p = (b.items?.[0]?.price || 0) + (b.items?.[1]?.price || 0)
+        const p = (b.items || []).reduce((sum, it) => sum + (it.price || 0), 0)
         return p <= currentBudget
       })
       if (budgetPassing.length > 0) return budgetPassing
@@ -226,10 +226,12 @@ function MultiBundleCoordinatorView({ bundleData, onAddToCart, onAutonomousCheck
 
   const initialTop = activeBundle?.items?.[0] || null
   const initialBottom = activeBundle?.items?.[1] || null
+  const initialPiece3 = activeBundle?.items?.[2] || null
 
   // Active items currently in the visual slot (can be customized via swap)
   const [activeTop, setActiveTop] = useState(initialTop)
   const [activeBottom, setActiveBottom] = useState(initialBottom)
+  const [activePiece3, setActivePiece3] = useState(initialPiece3)
 
   // Size selections
   const [topSize, setTopSize] = useState(bundleData?.initialTopSize || 'M')
@@ -249,12 +251,23 @@ function MultiBundleCoordinatorView({ bundleData, onAddToCart, onAutonomousCheck
   const piece2Sizes = isSecondPieceBottom ? ['28', '30', '32', '34', '36'] : ['S', 'M', 'L', 'XL', '2XL']
   const effectivePiece2Size = (!isSecondPieceBottom && /^\d+$/.test(bottomSize)) ? (topSize || 'L') : bottomSize
 
+  const isThirdPieceBottom = isBottomGarment(activePiece3)
+  const piece3Sizes = isThirdPieceBottom ? ['28', '30', '32', '34', '36'] : ['S', 'M', 'L', 'XL', '2XL']
+  const [piece3Size, setPiece3Size] = useState(() => {
+    if (activePiece3) {
+      return isBottomGarment(activePiece3) ? (bundleData?.initialBottomSize || '32') : (bundleData?.initialTopSize || 'L')
+    }
+    return bundleData?.initialBottomSize || '32'
+  })
+  const effectivePiece3Size = (!isThirdPieceBottom && /^\d+$/.test(piece3Size)) ? (topSize || 'L') : piece3Size
+
   // Swapping shelf drawers ('top' | 'bottom' | null)
   const [openShelf, setOpenShelf] = useState(null)
 
   // Expand/collapse states for pieces
   const [topPieceExpanded, setTopPieceExpanded] = useState(true)
   const [bottomPieceExpanded, setBottomPieceExpanded] = useState(true)
+  const [piece3Expanded, setPiece3Expanded] = useState(true)
 
   // Lightbox inspection modal
   const [inspectItem, setInspectItem] = useState(null)
@@ -272,11 +285,15 @@ function MultiBundleCoordinatorView({ bundleData, onAddToCart, onAutonomousCheck
       setHistoryIndex(0)
       setActiveTop(initBundle.items[0])
       setActiveBottom(initBundle.items[1])
+      setActivePiece3(initBundle.items[2] || null)
       setSelectedComboIdx(0)
       setOpenShelf(null)
     }
     if (bundleData?.initialTopSize) setTopSize(bundleData.initialTopSize)
-    if (bundleData?.initialBottomSize) setBottomSize(bundleData.initialBottomSize)
+    if (bundleData?.initialBottomSize) {
+      setBottomSize(bundleData.initialBottomSize)
+      setPiece3Size(bundleData.initialBottomSize)
+    }
   }, [bundleData])
 
   // Combo tab selection
@@ -287,16 +304,19 @@ function MultiBundleCoordinatorView({ bundleData, onAddToCart, onAutonomousCheck
       const cur = comboHistory[historyIndex]
       const curTopId = cur?.items?.[0]?.id
       const curBottomId = cur?.items?.[1]?.id
+      const curPiece3Id = cur?.items?.[2]?.id
       const tgtTopId = targetBundle.items[0]?.id
       const tgtBottomId = targetBundle.items[1]?.id
+      const tgtPiece3Id = targetBundle.items[2]?.id
 
-      if (curTopId !== tgtTopId || curBottomId !== tgtBottomId) {
+      if (curTopId !== tgtTopId || curBottomId !== tgtBottomId || curPiece3Id !== tgtPiece3Id) {
         const newHist = [...comboHistory.slice(0, historyIndex + 1), targetBundle]
         setComboHistory(newHist)
         setHistoryIndex(newHist.length - 1)
       }
       setActiveTop(targetBundle.items[0])
       setActiveBottom(targetBundle.items[1])
+      setActivePiece3(targetBundle.items[2] || null)
       setOpenShelf(null)
     }
   }
@@ -310,6 +330,7 @@ function MultiBundleCoordinatorView({ bundleData, onAddToCart, onAutonomousCheck
       if (nextBundle?.items?.length >= 2) {
         setActiveTop(nextBundle.items[0])
         setActiveBottom(nextBundle.items[1])
+        setActivePiece3(nextBundle.items[2] || null)
       }
       toast.success(`⚡ Restored Next Cached Combo (#${historyIndex + 2})`, { icon: '🔄' })
       return
@@ -317,14 +338,14 @@ function MultiBundleCoordinatorView({ bundleData, onAddToCart, onAutonomousCheck
 
     // 2. Look for next unused bundle from allBundles that is within budget
     const visitedSignatures = new Set(
-      comboHistory.map(b => `${b.items?.[0]?.id || ''}__${b.items?.[1]?.id || ''}`)
+      comboHistory.map(b => (b.items || []).map(it => it?.id || '').join('__'))
     )
 
     let nextCandidate = null
     for (const b of allBundles) {
-      const bPrice = (b.items?.[0]?.price || 0) + (b.items?.[1]?.price || 0)
+      const bPrice = (b.items || []).reduce((sum, it) => sum + (it.price || 0), 0)
       if (currentBudget > 0 && bPrice > currentBudget) continue // Strict Budget Gate
-      const sig = `${b.items?.[0]?.id || ''}__${b.items?.[1]?.id || ''}`
+      const sig = (b.items || []).map(it => it?.id || '').join('__')
       if (!visitedSignatures.has(sig)) {
         nextCandidate = b
         break
@@ -364,7 +385,7 @@ function MultiBundleCoordinatorView({ bundleData, onAddToCart, onAutonomousCheck
     // 4. Wrap around gracefully if all budget-compliant combos have been shown
     if (!nextCandidate) {
       const firstValid = allBundles.find(b => {
-        const p = (b.items?.[0]?.price || 0) + (b.items?.[1]?.price || 0)
+        const p = (b.items || []).reduce((sum, it) => sum + (it.price || 0), 0)
         return currentBudget === 0 || p <= currentBudget
       }) || allBundles[0] || activeBundle
 
@@ -378,8 +399,9 @@ function MultiBundleCoordinatorView({ bundleData, onAddToCart, onAutonomousCheck
       setHistoryIndex(newHist.length - 1)
       setActiveTop(nextCandidate.items[0])
       setActiveBottom(nextCandidate.items[1])
+      setActivePiece3(nextCandidate.items[2] || null)
       setOpenShelf(null)
-      const p = (nextCandidate.items[0]?.price || 0) + (nextCandidate.items[1]?.price || 0)
+      const p = (nextCandidate.items || []).reduce((sum, it) => sum + (it.price || 0), 0)
       toast.success(`⚡ Auto-Swapped to Next Best Combo (#${newHist.length}) • ₹${p}`, { icon: '⚡' })
     }
   }
@@ -392,6 +414,7 @@ function MultiBundleCoordinatorView({ bundleData, onAddToCart, onAutonomousCheck
       if (prevBundle?.items?.length >= 2) {
         setActiveTop(prevBundle.items[0])
         setActiveBottom(prevBundle.items[1])
+        setActivePiece3(prevBundle.items[2] || null)
       }
       setOpenShelf(null)
       toast(`◀ Returned to Previous Combo (#${historyIndex}) from cache`, { icon: '⏪' })
@@ -416,7 +439,7 @@ function MultiBundleCoordinatorView({ bundleData, onAddToCart, onAutonomousCheck
   }
 
   // Dynamic calculations
-  const currentPrice = (activeTop.price || 0) + (activeBottom.price || 0)
+  const currentPrice = (activeTop?.price || 0) + (activeBottom?.price || 0) + (activePiece3?.price || 0)
   const currentSavings = currentBudget > currentPrice ? Math.round(currentBudget - currentPrice) : 0
   const isOverBudget = currentBudget > 0 && currentPrice > currentBudget
   const styleScorePercent = Math.round((activeBundle?.style_score || 0.88) * 100)
@@ -428,17 +451,20 @@ function MultiBundleCoordinatorView({ bundleData, onAddToCart, onAutonomousCheck
   // Add complete outfit to cart
   const handleAddCompleteOutfit = () => {
     const topItemWithMeta = { ...activeTop, selectedSize: topSize }
-    const bottomItemWithMeta = { ...activeBottom, selectedSize: bottomSize }
+    const bottomItemWithMeta = { ...activeBottom, selectedSize: effectivePiece2Size }
+    const piece3ItemWithMeta = activePiece3 ? { ...activePiece3, selectedSize: effectivePiece3Size } : null
 
     if (onAddToCart) {
       onAddToCart(topItemWithMeta)
       onAddToCart(bottomItemWithMeta)
+      if (piece3ItemWithMeta) onAddToCart(piece3ItemWithMeta)
     } else {
       addToCartLocal(topItemWithMeta, 1)
       addToCartLocal(bottomItemWithMeta, 1)
+      if (piece3ItemWithMeta) addToCartLocal(piece3ItemWithMeta, 1)
     }
     setAddedComplete(true)
-    toast.success(`🎉 Added Complete Outfit to Cart! (Sizes: Upper ${topSize}, Lower ${bottomSize}) • Total: ₹${currentPrice}`)
+    toast.success(`🎉 Added Complete Outfit (${activePiece3 ? '3 Pieces' : '2 Pieces'}) to Cart! • Total: ₹${currentPrice}`)
     setTimeout(() => setAddedComplete(false), 2400)
   }
 
@@ -458,9 +484,12 @@ function MultiBundleCoordinatorView({ bundleData, onAddToCart, onAutonomousCheck
   // 1-Click Fast Buy
   const handleAutonomousBuy = () => {
     const topItemWithMeta = { ...activeTop, selectedSize: topSize }
-    const bottomItemWithMeta = { ...activeBottom, selectedSize: bottomSize }
+    const bottomItemWithMeta = { ...activeBottom, selectedSize: effectivePiece2Size }
     addToCartLocal(topItemWithMeta, 1)
     addToCartLocal(bottomItemWithMeta, 1)
+    if (activePiece3) {
+      addToCartLocal({ ...activePiece3, selectedSize: effectivePiece3Size }, 1)
+    }
     if (onAutonomousCheckout) {
       onAutonomousCheckout({ mode: 'cascade_failover', autoStart: true })
     } else {
@@ -505,7 +534,7 @@ function MultiBundleCoordinatorView({ bundleData, onAddToCart, onAutonomousCheck
           <div className="suite-combos-tabs-row horizontal-pills">
             {combos.map((combo, idx) => {
               const comboScore = combo.bundle?.style_score ? Math.round(combo.bundle.style_score * 100) : null
-              const comboPrice = (combo.bundle?.items?.[0]?.price || 0) + (combo.bundle?.items?.[1]?.price || 0)
+              const comboPrice = (combo.bundle?.items || []).reduce((sum, it) => sum + (it.price || 0), 0)
               const isComboOver = currentBudget > 0 && comboPrice > currentBudget
 
               return (
@@ -561,9 +590,10 @@ function MultiBundleCoordinatorView({ bundleData, onAddToCart, onAutonomousCheck
           type="button"
           className="btn-toggle-pieces-view"
           onClick={() => {
-            const nextState = !(topPieceExpanded && bottomPieceExpanded)
+            const nextState = !(topPieceExpanded && bottomPieceExpanded && (!activePiece3 || piece3Expanded))
             setTopPieceExpanded(nextState)
             setBottomPieceExpanded(nextState)
+            if (activePiece3) setPiece3Expanded(nextState)
           }}
           style={{
             background: 'rgba(255,255,255,0.04)',
@@ -579,7 +609,7 @@ function MultiBundleCoordinatorView({ bundleData, onAddToCart, onAutonomousCheck
             gap: 5
           }}
         >
-          {topPieceExpanded && bottomPieceExpanded ? (
+          {topPieceExpanded && bottomPieceExpanded && (!activePiece3 || piece3Expanded) ? (
             <>
               <ChevronUp size={13} />
               <span>Collapse Items</span>
@@ -593,7 +623,7 @@ function MultiBundleCoordinatorView({ bundleData, onAddToCart, onAutonomousCheck
         </button>
       </div>
 
-      <div className="suite-pieces-split-layout">
+      <div className={`suite-pieces-split-layout ${activePiece3 ? 'three-pieces' : ''}`}>
         {/* Piece #1: Upper (Collapsible) */}
         {!topPieceExpanded ? (
           <div 
@@ -916,6 +946,162 @@ function MultiBundleCoordinatorView({ bundleData, onAddToCart, onAutonomousCheck
             </div>
           </div>
         )}
+
+        {/* Connector 2 (if 3 pieces) */}
+        {activePiece3 && (
+          <div className="suite-center-connector">
+            <div className="connector-vertical-line" />
+            <div className="connector-harmony-badge">
+              <Sparkles size={16} />
+              <span className="connector-score">Ensemble</span>
+              <span className="connector-vibe">
+                3-Piece Look
+              </span>
+            </div>
+            <div className="connector-vertical-line" />
+          </div>
+        )}
+
+        {/* Piece #3: Additional Garment (Collapsible) */}
+        {activePiece3 && (!piece3Expanded ? (
+          <div 
+            className="suite-piece-card bottom-card collapsed animate-fade" 
+            onClick={() => setPiece3Expanded(true)}
+            title={`Click to expand ${isThirdPieceBottom ? 'lower garment' : 'third piece'}`}
+          >
+            <div className="piece-collapsed-row">
+              <img 
+                src={getProductImageUrl(activePiece3, isThirdPieceBottom ? 'bottom' : 'top')} 
+                alt={activePiece3.title || 'Piece #3'} 
+                className="piece-collapsed-thumb" 
+                onError={(e) => {
+                  e.target.onerror = null
+                  e.target.src = isThirdPieceBottom 
+                    ? 'https://images.unsplash.com/photo-1542272604-780c96856592?auto=format&fit=crop&w=800&q=80'
+                    : 'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?auto=format&fit=crop&w=800&q=80'
+                }}
+              />
+              <div className="piece-collapsed-meta">
+                <span className="piece-type-badge bottom" style={{ fontSize: '0.66rem', padding: '1px 6px', width: 'fit-content' }}>
+                  {activePiece3.category ? `Piece #3 • ${activePiece3.category.toUpperCase()}` : (isThirdPieceBottom ? 'Piece #3 • Lower' : 'Piece #3 • Upper')}
+                </span>
+                <strong className="piece-collapsed-title" title={activePiece3.title}>{activePiece3.title || activePiece3.name}</strong>
+                <div className="piece-collapsed-sub">
+                  <span className="current-price">₹{activePiece3.price}</span>
+                  <span className="size-badge-pill">{isThirdPieceBottom ? 'Waist' : 'Size'}: {effectivePiece3Size}</span>
+                </div>
+              </div>
+              <div className="piece-collapsed-actions" onClick={e => e.stopPropagation()}>
+                <button
+                  type="button"
+                  className={`btn-piece-add-mini ${addedPieceKey === 'piece3' ? 'added' : ''}`}
+                  onClick={() => handleAddPiece(activePiece3, effectivePiece3Size, 'piece3')}
+                  title={`Add piece #3 only (₹${activePiece3.price})`}
+                >
+                  {addedPieceKey === 'piece3' ? <Check size={13} /> : <Plus size={13} />}
+                  <span>₹{activePiece3.price}</span>
+                </button>
+                <button
+                  type="button"
+                  className="piece-accordion-toggle"
+                  onClick={() => setPiece3Expanded(true)}
+                  title="Expand piece details"
+                >
+                  <ChevronDown size={16} />
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="suite-piece-card bottom-card animate-fade">
+            <div className="piece-card-header">
+              <span className="piece-type-badge bottom">
+                {activePiece3.category ? `Piece #3 • ${activePiece3.category.toUpperCase()}` : (isThirdPieceBottom ? 'Piece #3 • Lower' : 'Piece #3 • Upper')}
+              </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <button 
+                  type="button" 
+                  className="piece-inspect-btn"
+                  onClick={() => setInspectItem(activePiece3)}
+                  title="Inspect Piece #3 Details"
+                >
+                  <Eye size={13} />
+                  <span>Details</span>
+                </button>
+                <button
+                  type="button"
+                  className="piece-accordion-toggle"
+                  onClick={() => setPiece3Expanded(false)}
+                  title="Collapse piece #3"
+                >
+                  <ChevronUp size={15} />
+                </button>
+              </div>
+            </div>
+
+            <div className="piece-image-wrap" onClick={() => setInspectItem(activePiece3)}>
+              <img 
+                src={getProductImageUrl(activePiece3, isThirdPieceBottom ? 'bottom' : 'top')} 
+                alt={activePiece3.title || activePiece3.name || 'Piece #3'} 
+                className="piece-photo" 
+                onError={(e) => {
+                  e.target.onerror = null
+                  e.target.src = isThirdPieceBottom 
+                    ? 'https://images.unsplash.com/photo-1542272604-780c96856592?auto=format&fit=crop&w=800&q=80'
+                    : 'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?auto=format&fit=crop&w=800&q=80'
+                }}
+              />
+              <div className="image-zoom-overlay">
+                <Maximize2 size={16} />
+              </div>
+            </div>
+
+            <div className="piece-details-body">
+              <h4 className="piece-item-title" title={activePiece3.title}>
+                {activePiece3.title || activePiece3.name}
+              </h4>
+              
+              <div className="piece-pricing-row">
+                <span className="current-price">₹{activePiece3.price}</span>
+                {activePiece3.mrp && Number(activePiece3.mrp) > activePiece3.price && (
+                  <span className="mrp-price">₹{activePiece3.mrp}</span>
+                )}
+                {activePiece3.rating && (
+                  <span className="rating-pill">★ {activePiece3.rating}</span>
+                )}
+              </div>
+
+              {/* Size Selector */}
+              <div className="piece-size-selector-row">
+                <span className="size-label">{isThirdPieceBottom ? 'Waist:' : 'Size:'}</span>
+                <div className="size-pills-wrap">
+                  {piece3Sizes.map(sz => (
+                    <button
+                      key={sz}
+                      type="button"
+                      className={`size-pill ${effectivePiece3Size === sz ? 'selected' : ''}`}
+                      onClick={() => setPiece3Size(sz)}
+                    >
+                      {sz}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Piece Actions */}
+              <div className="piece-card-actions">
+                <button
+                  type="button"
+                  className={`btn-piece-add ${addedPieceKey === 'piece3' ? 'added' : ''}`}
+                  onClick={() => handleAddPiece(activePiece3, effectivePiece3Size, 'piece3')}
+                >
+                  {addedPieceKey === 'piece3' ? <Check size={14} /> : <Plus size={14} />}
+                  <span>{addedPieceKey === 'piece3' ? 'Added Piece #3' : `Add Piece #3 Only (₹${activePiece3.price})`}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        ))}
       </div>
 
       {/* ── 3. Interactive Swapping Tray (Opens inline when user clicks Swap Upper/Lower) ── */}
@@ -1096,7 +1282,7 @@ function MultiBundleCoordinatorView({ bundleData, onAddToCart, onAutonomousCheck
           <span className="suite-total-label">Complete Outfit Total:</span>
           <div className="suite-total-numbers">
             <span className="suite-total-val">₹{currentPrice}</span>
-            <span className="suite-pieces-count">(Upper + Lower)</span>
+            <span className="suite-pieces-count">({activePiece3 ? '3 Pieces Coordinated' : 'Upper + Lower'})</span>
           </div>
         </div>
 

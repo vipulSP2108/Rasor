@@ -422,7 +422,11 @@ export default function CartDrawer({ onClose, autoStartCascade = false, onResetA
                         setSimulatedOosRemaining(effectiveOosCount)
                         updateConfig({ demoMode: 'cascade_failover' })
                         window.dispatchEvent(new CustomEvent('rasor:start-oos-cascade', { 
-                          detail: { count: effectiveOosCount, postCount: simulatedPostPaymentCount } 
+                          detail: { 
+                            count: effectiveOosCount, 
+                            postCount: simulatedPostPaymentCount,
+                            source: 'cart_drawer'
+                          } 
                         }))
                       }
                     }}

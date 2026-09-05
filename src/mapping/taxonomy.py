@@ -97,10 +97,9 @@ SPELL_CORRECTIONS: Dict[str, str] = {
 
 SYNONYM_MAP: Dict[str, str] = {
     # Category synonyms
-    "tee": "t-shirt", "top": "t-shirt", "topwear": "t-shirt", "uppers": "t-shirt", "upper": "t-shirt",
+    "tee": "t-shirt",
     "pullover": "hoodie", "jacket": "hoodie", "sweatshirt": "hoodie",
     "trackpants": "joggers", "track pants": "joggers", "track pant": "joggers", "sweatpants": "joggers",
-    "lowers": "joggers", "lower": "joggers", "bottoms": "joggers", "bottom": "joggers", "bottomwear": "joggers",
     "denim": "jeans", "jeanss": "jeans",
     "sandal": "sliders", "flip flop": "sliders", "chappal": "sliders", "flip flops": "sliders",
     "shoes": "footwear", "sneakers": "footwear", "casual shoes": "footwear", "sneaker": "footwear",

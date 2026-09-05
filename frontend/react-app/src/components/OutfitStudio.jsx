@@ -224,7 +224,7 @@ export default function OutfitStudio({ onAddToCart, onAutonomousCheckout, onNavi
     const hasLower = /\b(lower|bottom|pant|pants|jogger|joggers|jean|jeans|trouser|trousers|short|shorts|sweatpant|sweatpants|cargo|cargos)\b/i.test(t)
     const isOutfit = /\b(outfit|look|combo|pair|set)\b/i.test(t)
     const isVagueTwoUppers = /\b(?:2|two)\s*(?:uppers?|tops?|shirts?)\b/i.test(t)
-    if (isVagueTwoUppers) return false
+    if (isVagueTwoUppers && !hasLower) return false
     if (hasUpper && hasLower) return true
     if (isOutfit) return true
     if (t.includes('+') || t.includes(' and ')) {
@@ -666,8 +666,10 @@ export default function OutfitStudio({ onAddToCart, onAutonomousCheckout, onNavi
           query: synthesizedQuery,
           budget: targetBudget,
           gender: userProfile?.gender || 'men',
-          user_skin_depth: userProfile?.skinDepth || null,
-          user_undertone: userProfile?.undertone || null,
+          user_skin_depth: userProfile?.skinDepth || 5,
+          user_undertone: userProfile?.undertone || 'Neutral',
+          top_size: baseLookData.initialTopSize || null,
+          bottom_size: baseLookData.initialBottomSize || null,
           data_source: config.dataSource || 'dev'
         })
 
@@ -731,20 +733,16 @@ export default function OutfitStudio({ onAddToCart, onAutonomousCheckout, onNavi
     const coordinateAndDisplayLook = async (baseQuery, targetBudget, topSizeSpec, bottomSizeSpec) => {
       setIsCoordinating(true)
       let cleanQuery = String(baseQuery || 'complete outfit').replace(/categoryenum\./gi, '').trim()
-      let synthesizedQuery = cleanQuery
-      if (topSizeSpec && bottomSizeSpec) {
-        synthesizedQuery += ` upper size ${topSizeSpec} lower size ${bottomSizeSpec}`
-      } else if (topSizeSpec) {
-        synthesizedQuery += ` size ${topSizeSpec}`
-      }
 
       try {
         const res = await coordinateBundle({
-          query: synthesizedQuery,
+          query: cleanQuery,
           budget: targetBudget,
           gender: userProfile?.gender || 'men',
-          user_skin_depth: userProfile?.skinDepth || null,
-          user_undertone: userProfile?.undertone || null,
+          user_skin_depth: userProfile?.skinDepth || 5,
+          user_undertone: userProfile?.undertone || 'Neutral',
+          top_size: topSizeSpec || null,
+          bottom_size: bottomSizeSpec || null,
           data_source: config.dataSource || 'dev'
         })
 
@@ -756,6 +754,8 @@ export default function OutfitStudio({ onAddToCart, onAutonomousCheckout, onNavi
 
         if (data.status === 'budget_too_low') {
           replyContent = data.alternatives?.message || `💡 With your budget of ₹${targetBudget}, coordinating these pieces exceeds catalog floor prices. Here are proactive stylist recommendations:`
+        } else if (data.status === 'insufficient_inventory' || !data.hero_bundle) {
+          replyContent = `💡 I couldn't find matching inventory in the catalog for that combination under ₹${targetBudget}. Here are a few great alternative directions:`
         }
 
         const bundleMsg = {
@@ -769,6 +769,12 @@ export default function OutfitStudio({ onAddToCart, onAutonomousCheckout, onNavi
                 "Show Best Value Options",
                 "Switch to T-Shirt + Joggers"
               ]).map(o => String(o).replace(/categoryenum\./gi, ''))
+            : (data.status === 'insufficient_inventory' || !data.hero_bundle)
+            ? [
+                "Adjust budget to ₹3000",
+                "Olive hoodie and joggers under 2500",
+                "Give me 2 shirts under 1500"
+              ]
             : [
                 "🛒 Buy Combo #1",
                 "🔄 Next Best Combo",
@@ -785,7 +791,7 @@ export default function OutfitStudio({ onAddToCart, onAutonomousCheckout, onNavi
         setActiveStageBundle({
           bundleData: data,
           ownedItem: null,
-          title: synthesizedQuery
+          title: cleanQuery
         })
 
         if (bundleMsg.voiceEnabled && config.voiceEnabled) {
@@ -1066,8 +1072,8 @@ export default function OutfitStudio({ onAddToCart, onAutonomousCheckout, onNavi
           target_category: targetCat,
           budget: extractedBudget || 2500,
           gender: userProfile?.gender || 'men',
-          user_skin_depth: userProfile?.skinDepth || null,
-          user_undertone: userProfile?.undertone || null,
+          user_skin_depth: userProfile?.skinDepth || 5,
+          user_undertone: userProfile?.undertone || 'Neutral',
           data_source: config.dataSource || 'dev'
         })
 
@@ -1569,7 +1575,7 @@ export default function OutfitStudio({ onAddToCart, onAutonomousCheckout, onNavi
                           <div className="historical-look-left">
                             {msg.bundleData.hero_bundle?.items?.length >= 2 ? (
                               <div style={{ display: 'flex', alignItems: 'center', marginRight: 4 }}>
-                                {msg.bundleData.hero_bundle.items.slice(0, 2).map((item, itmIdx) => (
+                                {msg.bundleData.hero_bundle.items.slice(0, 3).map((item, itmIdx) => (
                                   <img
                                     key={itmIdx}
                                     src={getProductImageUrl(item, itmIdx === 0 ? 'top' : 'bottom')}
@@ -1593,7 +1599,7 @@ export default function OutfitStudio({ onAddToCart, onAutonomousCheckout, onNavi
                             <div className="historical-look-meta">
                               <strong>Latest Coordinated Look • ₹{msg.bundleData.hero_bundle?.total_price || msg.bundleData.budget || '—'}</strong>
                               <span className="historical-look-sub">
-                                {msg.bundleData.hero_bundle?.items?.[0]?.title?.slice(0, 24) || 'Upper'} + {msg.bundleData.hero_bundle?.items?.[1]?.title?.slice(0, 24) || 'Lower'} — <em>Tap to expand look</em>
+                                {msg.bundleData.hero_bundle?.items?.map(it => it.title?.slice(0, 20)).join(' + ') || 'Complete Look'} — <em>Tap to expand look</em>
                               </span>
                             </div>
                           </div>
@@ -1622,7 +1628,7 @@ export default function OutfitStudio({ onAddToCart, onAutonomousCheckout, onNavi
                       <div className="historical-look-left">
                         {msg.bundleData.hero_bundle?.items?.length >= 2 ? (
                           <div style={{ display: 'flex', alignItems: 'center', marginRight: 4 }}>
-                            {msg.bundleData.hero_bundle.items.slice(0, 2).map((item, itmIdx) => (
+                            {msg.bundleData.hero_bundle.items.slice(0, 3).map((item, itmIdx) => (
                               <img
                                 key={itmIdx}
                                 src={getProductImageUrl(item, itmIdx === 0 ? 'top' : 'bottom')}
@@ -1648,7 +1654,7 @@ export default function OutfitStudio({ onAddToCart, onAutonomousCheckout, onNavi
                         <div className="historical-look-meta">
                           <strong>{msg.ownedItem ? `Matched Look (${msg.ownedItem.color || ''} ${msg.ownedItem.category || ''})` : `Coordinated Look #${i} • ₹${msg.bundleData.hero_bundle?.total_price || msg.bundleData.budget || '—'}`}</strong>
                           <span className="historical-look-sub">
-                            {msg.bundleData.hero_bundle?.items?.[0]?.title?.slice(0, 22) || 'Piece 1'} + {msg.bundleData.hero_bundle?.items?.[1]?.title?.slice(0, 22) || 'Piece 2'} ({Math.round((msg.bundleData.hero_bundle?.style_score || 0.85) * 100)}% Harmony)
+                            {msg.bundleData.hero_bundle?.items?.map(it => it.title?.slice(0, 18)).join(' + ')} ({Math.round((msg.bundleData.hero_bundle?.style_score || 0.85) * 100)}% Harmony)
                           </span>
                         </div>
                       </div>
