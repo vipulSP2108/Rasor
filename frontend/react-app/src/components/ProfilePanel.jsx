@@ -14,6 +14,34 @@ const BANKS = [
   { code: 'ICIC', name: 'ICICI Bank' },
 ]
 
+const MONK_TONES = [
+  { tone: 1, hex: '#F6EDE4', label: 'MST 1 (Light)' },
+  { tone: 2, hex: '#F3E7DB', label: 'MST 2' },
+  { tone: 3, hex: '#F7EADC', label: 'MST 3' },
+  { tone: 4, hex: '#EAD0B3', label: 'MST 4' },
+  { tone: 5, hex: '#D7BD96', label: 'MST 5 (Medium)' },
+  { tone: 6, hex: '#9E7A5A', label: 'MST 6' },
+  { tone: 7, hex: '#7C563D', label: 'MST 7' },
+  { tone: 8, hex: '#634433', label: 'MST 8' },
+  { tone: 9, hex: '#4B3629', label: 'MST 9' },
+  { tone: 10, hex: '#2F241E', label: 'MST 10 (Deep)' },
+]
+
+const inferUndertone = (jewelry, sun, vein) => {
+  let warm = 0
+  let cool = 0
+  if (jewelry === 'gold') warm++
+  if (jewelry === 'silver') cool++
+  if (sun === 'tan') warm++
+  if (sun === 'burn') cool++
+  if (vein === 'green') warm++
+  if (vein === 'blue') cool++
+  if (warm === 0 && cool === 0) return null
+  if (warm > cool) return 'warm'
+  if (cool > warm) return 'cool'
+  return 'neutral'
+}
+
 function Toggle({ checked, onChange }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -41,6 +69,11 @@ export default function ProfilePanel() {
   const { userProfile, updateUserProfile, config, updateConfig } = useApp()
   const [form, setForm] = useState(() => ({
     ...userProfile,
+    skinDepth: userProfile?.skinDepth !== undefined ? userProfile.skinDepth : null,
+    undertone: userProfile?.undertone || null,
+    quizJewelry: userProfile?.quizJewelry || null,
+    quizSun: userProfile?.quizSun || null,
+    quizVein: userProfile?.quizVein || null,
     email: userProfile?.email || config?.customerEmail || 'vipulapatil21@gmail.com',
     customerEmail: config?.customerEmail || userProfile?.email || 'vipulapatil21@gmail.com',
     userLocation: config?.userLocation || userProfile?.userLocation || 'Mumbai',
@@ -129,6 +162,197 @@ export default function ProfilePanel() {
                     {fit}
                   </button>
                 ))}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Section 1B: Personal Color Theory & Skin Undertone (Decision D-08) */}
+        <div className="settings-section">
+          <div className="settings-section-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Sparkles size={18} style={{ color: 'var(--accent-purple)' }} />
+              <span>Personal Skin Tone Palette (Optional Soft Boost)</span>
+            </div>
+            <span style={{ fontSize: '0.75rem', color: 'var(--accent-purple)', fontWeight: 600 }}>
+              Non-Compulsory • +0.0 to +0.15 Boost
+            </span>
+          </div>
+          <div className="settings-section-body">
+            <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+              This optional profile gives a gentle positive affinity boost to upper garments closest to your face using the Monk Skin Tone scale and color harmony science. It never hides products or interferes with checkout.
+            </p>
+
+            {/* Monk Skin Tone Depth Slider / Swatches */}
+            <div>
+              <div className="settings-label" style={{ marginBottom: 10 }}>
+                <strong>Monk Skin Tone Scale (MST Depth: {form.skinDepth ? `${form.skinDepth}/10` : 'None / Any'})</strong>
+                <span>Select your skin depth from light (1) to deep (10), or Skip/Any:</span>
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <button
+                  type="button"
+                  className={`monk-chip ${form.skinDepth === null ? 'selected' : ''}`}
+                  style={{ 
+                    width: 'auto', 
+                    minWidth: 54, 
+                    height: 34, 
+                    padding: '0 10px', 
+                    background: form.skinDepth === null ? 'rgba(99, 102, 241, 0.25)' : 'rgba(255, 255, 255, 0.05)',
+                    border: form.skinDepth === null ? '2px solid var(--accent-purple)' : '1px solid var(--border)',
+                    borderRadius: 8,
+                    color: form.skinDepth === null ? '#fff' : 'var(--text-secondary)',
+                    fontSize: '0.78rem',
+                    fontWeight: 600,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 4
+                  }}
+                  title="Skip / None (No Depth Preference)"
+                  onClick={() => setForm(f => ({ ...f, skinDepth: null }))}
+                >
+                  {form.skinDepth === null && <Check size={12} color="#fff" />}
+                  <span>Any</span>
+                </button>
+                {MONK_TONES.map(m => (
+                  <button
+                    key={m.tone}
+                    type="button"
+                    className={`monk-chip ${form.skinDepth === m.tone ? 'selected' : ''}`}
+                    style={{ background: m.hex, width: 34, height: 34 }}
+                    title={m.label}
+                    onClick={() => setForm(f => ({ ...f, skinDepth: m.tone }))}
+                  >
+                    {form.skinDepth === m.tone && <Check size={14} color={m.tone > 5 ? '#fff' : '#000'} />}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="divider" style={{ margin: '14px 0' }} />
+
+            {/* 3-Question Undertone Self-Report Quiz */}
+            <div>
+              <div className="settings-label" style={{ marginBottom: 12 }}>
+                <strong>3-Question Undertone Self-Report Quiz</strong>
+                <span>Tap your natural responses to automatically determine your undertone (or select Skip/Any):</span>
+              </div>
+
+              {/* Q1: Jewelry */}
+              <div style={{ marginBottom: 12 }}>
+                <span style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-primary)', display: 'block', marginBottom: 6 }}>
+                  1. Which metal looks best against your skin?
+                </span>
+                <div className="radio-group">
+                  {[
+                    { id: 'gold', label: 'Gold Jewelry (Warm)' },
+                    { id: 'silver', label: 'Silver / White Gold (Cool)' },
+                    { id: 'both', label: 'Both Look Equally Flattering (Neutral)' },
+                    { id: 'any', label: 'Any / Skip (No Preference)' }
+                  ].map(opt => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      className={`radio-option ${(form.quizJewelry === opt.id || (!form.quizJewelry && opt.id === 'any')) ? 'selected' : ''}`}
+                      onClick={() => {
+                        const newQ = { ...form, quizJewelry: opt.id === 'any' ? null : opt.id }
+                        const newUt = inferUndertone(newQ.quizJewelry, newQ.quizSun, newQ.quizVein)
+                        setForm(f => ({ ...f, quizJewelry: opt.id === 'any' ? null : opt.id, undertone: newUt }))
+                      }}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Q2: Sun Response */}
+              <div style={{ marginBottom: 12 }}>
+                <span style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-primary)', display: 'block', marginBottom: 6 }}>
+                  2. How does your skin respond to direct sunlight?
+                </span>
+                <div className="radio-group">
+                  {[
+                    { id: 'tan', label: 'Tans easily, rarely burns (Warm)' },
+                    { id: 'burn', label: 'Burns easily, rarely tans (Cool)' },
+                    { id: 'mixed', label: 'Burns initially, then turns tan (Neutral)' },
+                    { id: 'any', label: 'Any / Skip (No Preference)' }
+                  ].map(opt => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      className={`radio-option ${(form.quizSun === opt.id || (!form.quizSun && opt.id === 'any')) ? 'selected' : ''}`}
+                      onClick={() => {
+                        const newQ = { ...form, quizSun: opt.id === 'any' ? null : opt.id }
+                        const newUt = inferUndertone(newQ.quizJewelry, newQ.quizSun, newQ.quizVein)
+                        setForm(f => ({ ...f, quizSun: opt.id === 'any' ? null : opt.id, undertone: newUt }))
+                      }}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Q3: Wrist Veins */}
+              <div style={{ marginBottom: 12 }}>
+                <span style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-primary)', display: 'block', marginBottom: 6 }}>
+                  3. What color do the veins on your inner wrist appear?
+                </span>
+                <div className="radio-group">
+                  {[
+                    { id: 'green', label: 'Greenish / Olive (Warm)' },
+                    { id: 'blue', label: 'Blueish / Purple (Cool)' },
+                    { id: 'mixed', label: 'Blue-green or difficult to tell (Neutral)' },
+                    { id: 'any', label: 'Any / Skip (Difficult to Tell)' }
+                  ].map(opt => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      className={`radio-option ${(form.quizVein === opt.id || (!form.quizVein && opt.id === 'any')) ? 'selected' : ''}`}
+                      onClick={() => {
+                        const newQ = { ...form, quizVein: opt.id === 'any' ? null : opt.id }
+                        const newUt = inferUndertone(newQ.quizJewelry, newQ.quizSun, newQ.quizVein)
+                        setForm(f => ({ ...f, quizVein: opt.id === 'any' ? null : opt.id, undertone: newUt }))
+                      }}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Inferred Undertone Badge */}
+              <div style={{ 
+                marginTop: 14, 
+                padding: '10px 14px', 
+                background: 'rgba(99, 102, 241, 0.1)', 
+                border: '1px solid rgba(99, 102, 241, 0.3)', 
+                borderRadius: 'var(--radius-sm)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between'
+              }}>
+                <div>
+                  <strong style={{ color: '#fff', fontSize: '0.85rem' }}>Active Undertone Affinity:</strong>
+                  <span style={{ display: 'block', fontSize: '0.76rem', color: 'var(--text-secondary)' }}>
+                    {(!form.undertone || form.undertone === 'any') && 'Neutral / Any • Zero color bias applied (all colorways treated equally)'}
+                    {form.undertone === 'warm' && 'Warm Undertone • Flattering tones: Olive Green, Mustard, Terracotta, Warm Beige'}
+                    {form.undertone === 'cool' && 'Cool Undertone • Flattering tones: Cobalt Blue, Dark Navy, Burgundy, Crisp White'}
+                    {form.undertone === 'neutral' && 'Neutral / Olive Undertone • Flattering tones: Charcoal, Heather Grey, Sand Beige, Muted Tones'}
+                  </span>
+                </div>
+                <span style={{ 
+                  background: (!form.undertone || form.undertone === 'any') ? 'rgba(255, 255, 255, 0.12)' : 'var(--accent-purple)', 
+                  color: '#fff', 
+                  padding: '4px 10px', 
+                  borderRadius: 99, 
+                  fontSize: '0.74rem', 
+                  fontWeight: 700,
+                  textTransform: 'uppercase'
+                }}>
+                  {form.undertone || 'ANY / NONE'}
+                </span>
               </div>
             </div>
           </div>

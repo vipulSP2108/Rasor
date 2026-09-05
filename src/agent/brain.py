@@ -38,302 +38,25 @@ load_dotenv()
 _VQA_CACHE: dict = {}
 
 # ---------------------------------------------------------------------------
-# 1. Spell Correction & Synonym Map
-#    These run BEFORE the LLM to pre-clean user typos and synonyms.
-#    This makes the system more robust on both LLM and rule-based paths.
+# 1. Semantic Mapping & Taxonomies (Centralized in src.mapping)
 # ---------------------------------------------------------------------------
 
-_SPELL_CORRECTIONS: dict = {
-    # Typos & common misspellings
-    "tshrt": "t-shirt", "t shrts": "t-shirt", "t shrt": "t-shirt",
-    "tshirts": "t-shirt", "tee shirt": "t-shirt", "teeshirt": "t-shirt",
-    "sweat shirt": "sweatshirt", "hooide": "hoodie", "hoddie": "hoodie",
-    "jogger": "joggers", "joogers": "joggers",
-    "slipper": "sliders", "sliders": "sliders",
-    "batman": "batman", "bataman": "batman", "btaman": "batman", "batmn": "batman",
-    "spiderman": "spider man", "spideman": "spider man", "spidermn": "spider man",
-    "ironman": "iron man", "iron-man": "iron man", "iroman": "iron man", "irom man": "iron man",
-    "captainamerica": "captain america",
-    "panther": "panther", "pather": "panther", "black pather": "black panther",
-    "pantheer": "panther", "black pantheer": "black panther",
-    "deapool": "deadpool", "wolvrine": "wolverine",
-    "oversized": "oversized", "oversize": "oversized", "over size": "oversized",
-    "baggy": "baggy", "loose": "oversized",
-    "full sleve": "full sleeve", "full sleev": "full sleeve", "full slv": "full sleeve",
-    "half sleve": "half sleeve", "haf sleeve": "half sleeve",
-    "blck": "black", "wite": "white", "ble": "blue", "gree": "green",
-    "maroon": "maroon", "mroon": "maroon",
-    "grphic": "graphic", "typo": "typography",
-    "womens": "women", "mens": "men", "ladie": "women", "ladies": "women",
-    "girs": "women", "girls": "women", "boys": "men",
-    "colur": "color", "colour": "color",
-    "under Rs": "under", "under rs": "under", "below rs": "under",
-}
-
-_SYNONYM_MAP: dict = {
-    # Category synonyms
-    "tee": "t-shirt", "top": "t-shirt", "topwear": "t-shirt",
-    "pullover": "hoodie", "jacket": "hoodie", "sweatshirt": "hoodie",
-    "trackpants": "joggers", "track pants": "joggers", "sweatpants": "joggers",
-    "denim": "jeans", "jeanss": "jeans",
-    "sandal": "sliders", "flip flop": "sliders", "chappal": "sliders",
-    "shoes": "footwear", "sneakers": "footwear",
-    # Design synonyms
-    "plain": "solid", "basic": "solid", "single color": "solid", "no print": "solid",
-    "printed": "graphic print", "anime": "graphic print",
-    "text": "typography", "quote": "typography", "slogan": "typography", "lettering": "typography",
-    "vintage wash": "washed", "acid wash": "washed",
-    # Fit synonyms
-    "loose": "oversized", "relaxed": "oversized", "baggy": "oversized",
-    "slim": "slim fit", "tight": "slim fit",
-    "boyfriend": "boyfriend fit",
-    # Neck & Fabric
-    "v neck": "v-neck", "vneck": "v-neck",
-    "crew neck": "round neck", "crew": "round neck", "round": "round neck",
-    "collared": "collar", "polo neck": "polo",
-    "poly": "polyester", "cotton blend": "blend", "poly cotton": "blend",
-    # Gender synonyms
-    "female": "women", "girl": "women", "lady": "women",
-    "male": "men", "guy": "men", "boy": "men",
-    # Fandom synonyms
-    "dc comics": "dc", "dc universe": "dc", "justice league": "dc",
-    "marvel universe": "marvel", "mcu": "marvel", "avengers": "marvel",
-    "hp": "harry potter", "hogwarts": "harry potter",
-    "mickey": "disney", "minnie": "disney",
-    "looney": "looney tunes", "bugs bunny": "looney tunes",
-    "tom and jerry": "tom and jerry", "tom & jerry": "tom and jerry",
-}
-
-_FANDOM_KNOWLEDGE_GRAPH: dict = {
-    # Marvel
-    "black panther": ["wakanda", "t'challa", "vibranium", "marvel"],
-    "panther": ["wakanda", "t'challa", "vibranium", "marvel"],
-    "spiderman": ["spider-man", "peter parker", "miles morales", "web", "marvel"],
-    "spider-man": ["spider", "peter parker", "miles morales", "web", "marvel"],
-    "ironman": ["iron man", "tony stark", "stark industries", "arc reactor", "marvel"],
-    "iron man": ["tony stark", "stark industries", "arc reactor", "marvel"],
-    "captain america": ["steve rogers", "shield", "first avenger", "marvel"],
-    "thor": ["mjolnir", "asgard", "god of thunder", "marvel"],
-    "deadpool": ["ryan reynolds", "marvel", "merc with a mouth", "wade wilson"],
-    "wolverine": ["x-men", "logan", "mutant", "marvel", "adamantium"],
-    "venom": ["symbiote", "eddie brock", "marvel", "carnage"],
-    "hulk": ["bruce banner", "avengers", "marvel", "smash"],
-    "guardians": ["groot", "rocket", "star-lord", "marvel", "galaxy"],
-    "groot": ["guardians", "galaxy", "marvel", "i am groot"],
-    "thanos": ["infinity", "gauntlet", "marvel", "avengers"],
-    "loki": ["asgard", "god of mischief", "marvel"],
-    "hawkeye": ["clint barton", "avengers", "marvel", "arrow"],
-    "antman": ["scott lang", "quantum", "marvel", "pym"],
-    "doctor strange": ["sorcerer supreme", "marvel", "multiversal"],
-    # DC
-    "batman": ["gotham", "dark knight", "bruce wayne", "joker", "dc"],
-    "superman": ["clark kent", "krypton", "man of steel", "dc"],
-    "wonder woman": ["diana prince", "amazon", "dc"],
-    "flash": ["barry allen", "speedster", "central city", "dc"],
-    "aquaman": ["arthur curry", "atlantis", "dc", "ocean"],
-    "joker": ["gotham", "dc", "villain", "batman"],
-    "harley quinn": ["dc", "joker", "gotham", "villain"],
-    "green lantern": ["dc", "hal jordan", "ring"],
-    # Anime
-    "naruto": ["hidden leaf", "hokage", "sasuke", "kakashi", "anime", "shinobi"],
-    "dragon ball": ["dbz", "goku", "vegeta", "saiyan", "anime"],
-    "dbz": ["dragon ball", "goku", "vegeta", "saiyan", "anime"],
-    "goku": ["dragon ball", "saiyan", "kamehameha", "anime"],
-    "one piece": ["luffy", "straw hat", "zoro", "anime", "pirate"],
-    "luffy": ["one piece", "straw hat", "pirate", "anime"],
-    "attack on titan": ["aot", "eren", "levi", "survey corps", "anime"],
-    "aot": ["attack on titan", "eren", "levi", "anime"],
-    "jujutsu kaisen": ["jjk", "gojo", "itadori", "sukuna", "anime"],
-    "jjk": ["jujutsu kaisen", "gojo", "itadori", "anime"],
-    "demon slayer": ["tanjiro", "nezuko", "zenitsu", "anime", "kimetsu"],
-    "my hero academia": ["mha", "deku", "plus ultra", "anime", "izuku"],
-    "mha": ["my hero academia", "deku", "all might", "anime"],
-    "bleach": ["ichigo", "soul reaper", "anime", "zanpakuto"],
-    "hunter x hunter": ["hxh", "gon", "killua", "nen", "anime"],
-    # Disney / Pop Culture
-    "mickey mouse": ["disney", "mickey", "classic"],
-    "star wars": ["darth vader", "yoda", "jedi", "sith", "force", "galaxy"],
-    "darth vader": ["star wars", "sith", "dark side", "force"],
-    "mandalorian": ["star wars", "mando", "baby yoda", "grogu"],
-}
-
-_CHARACTER_ENTITY_MAP: dict = {
-    "black panther": ["black panther", "black pantheer", "black pather", "pather", "wakanda", "t'challa", "tchalla", "shuri", "killmonger", "the king", "king black panther", "panther"],
-    "iron man": ["iron man", "ironman", "tony stark", "arc reactor", "war machine"],
-    "spider-man": ["spider-man", "spiderman", "peter parker", "miles morales", "spider punk", "spider-punk", "brand new day"],
-    "venom": ["venom", "symbiote", "carnage", "eddie brock"],
-    "moon knight": ["moon knight", "marc spector"],
-    "batman": ["batman", "dark knight", "bruce wayne", "gotham"],
-    "deadpool": ["deadpool", "wade wilson"],
-    "captain america": ["captain america", "steve rogers"],
-    "thor": ["thor", "mjolnir", "odinson"],
-    "hulk": ["hulk", "bruce banner"],
-    "wolverine": ["wolverine", "logan"],
-    "joker": ["joker"],
-    "superman": ["superman", "clark kent"],
-    "ghost rider": ["ghost rider", "spirit of vengeance", "johnny blaze"],
-    "fantastic four": ["the four", "fantastic four", "mr fantastic", "human torch", "invisible woman"],
-    "punisher": ["punisher", "frank castle"],
-    "daredevil": ["daredevil", "matt murdock"],
-    "naruto": ["naruto", "sasuke", "kakashi", "hokage"],
-    "dragon ball": ["goku", "vegeta", "dbz", "dragon ball"],
-    "one piece": ["luffy", "zoro", "one piece"],
-    "jujutsu kaisen": ["gojo", "sukuna", "itadori", "jjk"],
-}
-
-_ENTITY_FRANCHISE_MAP: dict = {
-    "black panther": "marvel",
-    "iron man": "marvel",
-    "spider-man": "marvel",
-    "venom": "marvel",
-    "moon knight": "marvel",
-    "deadpool": "marvel",
-    "captain america": "marvel",
-    "thor": "marvel",
-    "hulk": "marvel",
-    "wolverine": "marvel",
-    "ghost rider": "marvel",
-    "fantastic four": "marvel",
-    "punisher": "marvel",
-    "daredevil": "marvel",
-    "batman": "dc",
-    "joker": "dc",
-    "superman": "dc",
-    "naruto": "anime",
-    "dragon ball": "anime",
-    "one piece": "anime",
-    "jujutsu kaisen": "anime",
-}
-
-_VIBE_MAP: dict = {
-    "retro grunge": "oversized fit washed graphic print maroon grey black",
-    "grunge": "oversized fit washed graphic print maroon grey black",
-    "minimalist": "regular fit solid beige white navy",
-    "streetwear": "baggy fit graphic print black white",
-    "y2k": "baggy fit washed typography pink blue",
-    "gym": "regular fit solid black grey blue",
-    "cozy": "oversized fit solid grey beige brown"
-}
-
-def get_product_color(title: str, specs: Optional[dict] = None) -> str:
-    """Accurately extracts product color from specs or title adjective."""
-    if specs and specs.get("color"):
-        return str(specs.get("color", "")).lower().strip()
-    clean_title = re.sub(r"^(men's|women's|boys'|girls'|unisex)\s+", "", (title or "").lower())
-    m = re.match(
-        r"^(jet\s+black|dark\s+shadow\s+grey|dark\s+grey|light\s+grey|navy\s+blue|olive\s+green|"
-        r"black|white|grey|gray|green|blue|red|yellow|maroon|beige|brown|orange|pink|purple|teal)\b",
-        clean_title
-    )
-    if m:
-        return m.group(1).strip()
-    return ""
-
-def preprocess_prompt(prompt: str, enable_semantic: bool = True) -> str:
-    """Step 0: Normalize case, fix spelling, expand synonyms and knowledge graph before LLM or rules."""
-    text = prompt.strip().lower()
-    
-    # Apply vibe mapping (exact phrase matching)
-    for vibe, expansion in _VIBE_MAP.items():
-        if re.search(rf"\b{re.escape(vibe)}\b", text):
-            text = text + " " + expansion
-            
-    # Apply spell corrections (exact phrase matching)
-    for typo, fix in _SPELL_CORRECTIONS.items():
-        text = re.sub(rf"\b{re.escape(typo)}\b", fix, text)
-    
-    # Apply synonym expansion (exact phrase matching)
-    for synonym, canonical in _SYNONYM_MAP.items():
-        text = re.sub(rf"\b{re.escape(synonym)}\b", canonical, text)
-        
-    # Apply Fandom Knowledge Graph Expansion (only if enabled)
-    if enable_semantic:
-        expanded_terms = []
-        for entity, related_keywords in _FANDOM_KNOWLEDGE_GRAPH.items():
-            if re.search(rf"\b{re.escape(entity)}\b", text):
-                expanded_terms.extend(related_keywords)
-                
-        # Append unique expanded terms to the end of the text
-        if expanded_terms:
-            unique_terms = list(dict.fromkeys(expanded_terms))
-            text = text + " " + " ".join(unique_terms)
-    
-    return text
-
-def get_semantic_affinity_tier(
-    product: Product,
-    target_char_key: Optional[str] = None,
-    target_char_terms: Optional[List[str]] = None,
-    query_text: str = ""
-) -> int:
-    """Returns an integer semantic affinity tier (4 down to 0) representing closeness to user intent:
-      Tier 4 (Exact Target Entity/Character): Direct match for target subject (e.g. 'black panther').
-      Tier 3 (Core Lore / Associated Sub-Entities): Direct lore, iconic aliases, or related key entities
-             (e.g. for Black Panther: 'wakanda', 't'challa', 'the king', 'panther').
-      Tier 2 (Parent Universe / Franchise): Parent universe without the character (e.g. 'marvel', 'dc', 'anime').
-      Tier 1 (Neutral Category / Color): Matches generic attributes without conflicting characters.
-      Tier 0 (Conflicting Character): Features a different/opposing character.
-    """
-    p_title = (product.title or "").lower()
-    p_specs = product.specs or {}
-    p_fandom = str(p_specs.get("fandom_partner", "")).lower()
-    p_design = str(p_specs.get("design", "")).lower()
-    p_subclass = str(p_specs.get("subclass", "")).lower()
-    p_text = f"{p_title} {p_fandom} {p_design} {p_subclass}".lower()
-
-    if target_char_key:
-        # 1. Conflicting Character Check
-        for other_key, other_terms in _CHARACTER_ENTITY_MAP.items():
-            if other_key != target_char_key:
-                if any(re.search(rf"\b{re.escape(ot)}\b", p_text) for ot in other_terms):
-                    return 0  # Tier 0: Conflicting character
-
-        # 2. Exact Target Character Check
-        exact_terms = [target_char_key, target_char_key.replace("-", " "), target_char_key.replace(" ", "")]
-        if target_char_key == "black panther":
-            exact_terms.extend(["black panther", "black pantheer", "black pather", "king black panther", "t'challa", "tchalla"])
-        elif target_char_key == "spider-man":
-            exact_terms.extend(["spider-man", "spiderman", "spider man", "peter parker", "miles morales"])
-        elif target_char_key == "iron man":
-            exact_terms.extend(["iron man", "ironman", "tony stark"])
-        elif target_char_key == "batman":
-            exact_terms.extend(["batman", "dark knight", "bruce wayne"])
-        elif target_char_key == "wolverine":
-            exact_terms.extend(["wolverine", "logan"])
-        elif target_char_key == "captain america":
-            exact_terms.extend(["captain america", "steve rogers"])
-
-        if any(re.search(rf"\b{re.escape(et)}\b", p_text) for et in exact_terms):
-            return 4  # Tier 4: Exact Character Match
-
-        # 3. Lore / Sub-Entity / Direct Lore Characters
-        lore_terms = target_char_terms or _CHARACTER_ENTITY_MAP.get(target_char_key, [])
-        if any(re.search(rf"\b{re.escape(lt)}\b", p_text) for lt in lore_terms if lt not in exact_terms):
-            return 3  # Tier 3: Core Lore / Direct Sub-Entity
-
-        # 4. Parent Universe / Franchise
-        parent_universe = _ENTITY_FRANCHISE_MAP.get(target_char_key)
-        if parent_universe and (
-            re.search(rf"\b{re.escape(parent_universe)}\b", p_text) or
-            parent_universe in p_fandom
-        ):
-            return 2  # Tier 2: Parent Franchise / Universe
-
-        # 5. Neutral Category Match
-        return 1  # Tier 1: Neutral Category
-
-    # If no target character, compute general keyword affinity
-    q_words = [w for w in re.findall(r"[a-z0-9]+", (query_text or "").lower()) if len(w) > 2]
-    if q_words:
-        matched = sum(1 for w in q_words if w in p_text)
-        ratio = matched / len(q_words)
-        if ratio >= 0.75:
-            return 4
-        elif ratio >= 0.45:
-            return 3
-        elif ratio >= 0.2:
-            return 2
-    return 1
+from src.mapping import (
+    SPELL_CORRECTIONS as _SPELL_CORRECTIONS,
+    SYNONYM_MAP as _SYNONYM_MAP,
+    FANDOM_KNOWLEDGE_GRAPH as _FANDOM_KNOWLEDGE_GRAPH,
+    CHARACTER_ENTITY_MAP as _CHARACTER_ENTITY_MAP,
+    ENTITY_FRANCHISE_MAP as _ENTITY_FRANCHISE_MAP,
+    VIBE_MAP as _VIBE_MAP,
+    get_product_color,
+    preprocess_prompt,
+    get_semantic_affinity_tier,
+    resolve_handle,
+    parse_requested_sizes,
+    map_intent_to_catalog,
+    CatalogMappingInput,
+    ResolvedCatalogIntent,
+)
 
 
 def calculate_dynamic_composite_match(
@@ -353,7 +76,8 @@ def calculate_dynamic_composite_match(
     prompt_lower = (user_prompt or "").lower()
     p_title = (product.title or "").lower()
     p_specs = product.specs or {}
-    p_text = f"{product.title} {p_specs.get('fandom_partner', '')} {p_specs.get('design', '')} {p_specs.get('color', '')} {p_specs.get('subclass', '')}".lower()
+    p_tags = " ".join(p_specs.get("tags", [])) if isinstance(p_specs.get("tags"), list) else str(p_specs.get("tags", ""))
+    p_text = f"{product.title} {p_specs.get('fandom_partner', '')} {p_specs.get('design', '')} {p_specs.get('color', '')} {p_specs.get('subclass', '')} {p_tags}".lower()
 
     # 1. Semantic Affinity Tier & Conflicting Character Check
     affinity_tier = get_semantic_affinity_tier(product, target_char_key, target_char_terms, user_prompt)
@@ -374,10 +98,57 @@ def calculate_dynamic_composite_match(
         base_score += 0.05  # General garment when specific character was asked
 
     # 3. Category satisfaction
-    cat_match = bool(re.search(r"\b(t-?shirt|tee|shirt|hoodie|joggers|jeans|pants|vest|polo|top|shorts)\b", prompt_lower))
-    if cat_match:
-        if any(cat in p_title or cat in str(p_specs.get("subclass", "")).lower() for cat in ["t-shirt", "tee", "shirt", "tshirt", "hoodie", "polo"]):
-            base_score += 0.16
+    target_cat = None
+    if canonical and hasattr(canonical, "category") and canonical.category and getattr(canonical.category, "value", str(canonical.category)) != "general":
+        target_cat = getattr(canonical.category, "value", str(canonical.category)).lower()
+
+    if not target_cat:
+        if re.search(r"\b(hoodie|sweatshirt|pullover)\b", prompt_lower):
+            target_cat = "hoodie"
+        elif re.search(r"\b(t-?shirt|tee|tshirt)\b", prompt_lower):
+            target_cat = "t-shirt"
+        elif re.search(r"\b(joggers?|trackpants?|sweatpants?)\b", prompt_lower):
+            target_cat = "joggers"
+        elif re.search(r"\b(jeans?|denim)\b", prompt_lower):
+            target_cat = "jeans"
+        elif re.search(r"\b(shirt|button up)\b", prompt_lower):
+            target_cat = "shirt"
+        elif re.search(r"\b(vest|tank)\b", prompt_lower):
+            target_cat = "vest"
+        elif re.search(r"\b(polo)\b", prompt_lower):
+            target_cat = "polo"
+        elif re.search(r"\b(shorts?)\b", prompt_lower):
+            target_cat = "shorts"
+
+    p_type = f"{p_title} {p_specs.get('subclass', '')} {p_specs.get('shopify_product_type', '')}".lower()
+
+    if target_cat:
+        if target_cat in ("hoodie", "sweatshirt"):
+            if "hoodie t-shirt" in p_type or "hoodie tee" in p_type:
+                base_score += 0.08  # Hybrid hooded t-shirt
+            elif any(h in p_type for h in ["hoodie", "hoodies", "sweatshirt", "sweatshirts", "pullover"]):
+                base_score += 0.20  # Genuine hoodie / sweatshirt match
+            else:
+                base_score -= 0.15  # Category mismatch (user asked for hoodie, got t-shirt/vest)
+        elif target_cat in ("t-shirt", "tee"):
+            if any(t in p_type for t in ["t-shirt", "tee", "tshirt", "topwear"]):
+                base_score += 0.18
+            else:
+                base_score -= 0.15
+        elif target_cat in ("joggers", "trackpants"):
+            if any(j in p_type for j in ["jogger", "trackpant", "sweatpant", "pyjama", "pajama"]):
+                base_score += 0.18
+            else:
+                base_score -= 0.15
+        elif target_cat in ("jeans", "denim"):
+            if any(j in p_type for j in ["jean", "denim"]):
+                base_score += 0.18
+            else:
+                base_score -= 0.15
+        elif target_cat in p_type:
+            base_score += 0.18
+        else:
+            base_score -= 0.12
     else:
         base_score += 0.10
 
@@ -438,7 +209,7 @@ def calculate_dynamic_composite_match(
     # 7. Token overlap bonus for product title
     stopwords = {"for", "the", "in", "of", "and", "with", "a", "an", "to", "at", "by", "on", "men", "mens", "women", "womens"}
     query_tokens = [w for w in re.findall(r"[a-z0-9]+", prompt_lower) if w not in stopwords and len(w) > 1]
-    title_tokens = set(re.findall(r"[a-z0-9]+", p_title))
+    title_tokens = set(re.findall(r"[a-z0-9]+", f"{p_title} {p_specs.get('fandom_partner', '')} {p_tags}"))
     overlap_count = sum(1 for tok in query_tokens if tok in title_tokens)
     overlap_ratio = overlap_count / max(len(query_tokens), 1)
     overlap_bonus = 0.05 * overlap_ratio
@@ -741,7 +512,7 @@ class AgentBrain:
             for data in item_list:
                 try:
                     data["original_prompt"] = user_prompt
-                    data["gender"] = data.get("gender", "men") if data.get("gender") in [e.value for e in GenderEnum] else "men"
+                    data["gender"] = data.get("gender") if data.get("gender") in [e.value for e in GenderEnum] else GenderEnum.ALL.value
                     data["category"] = data.get("category", "t-shirt") if data.get("category") in [e.value for e in CategoryEnum] else "t-shirt"
                     data["color"] = data.get("color", "Any") if data.get("color") in [e.value for e in ColorEnum] else "Any"
                     data["design"] = data.get("design", "Any") if data.get("design") in [e.value for e in DesignEnum] else "Any"
@@ -774,63 +545,107 @@ class AgentBrain:
                 items_to_buy = parse_item_list(data.get("items_to_buy", []))
                 owned_items = parse_item_list(data.get("owned_items", []))
                 
-        # Algorithmic Budget Scaling
+        # Algorithmic Dynamic Budget Scaling
         if budget and len(items_to_buy) >= 2:
-            n_items = len(items_to_buy)
-            max_cap = 0.7 if n_items == 2 else (1.4 / n_items)
-            category_weights = {"jeans": 1.0, "hoodie": 0.9, "joggers": 0.8, "shirt": 0.6, "t-shirt": 0.5, "sliders": 0.3}
-            
-            for item in items_to_buy:
-                if not item.max_price:
-                    weight = category_weights.get(item.category.value, 0.5)
-                    # Scale based on boundary * weight, bounded at absolute max
-                    item.max_price = round(budget * min(max_cap, weight))
+            from src.agent.bundle_coordinator import DynamicBudgetAllocator
+            items_dict = [{"category": item.category.value} for item in items_to_buy]
+            allocated_sub_budgets = DynamicBudgetAllocator.allocate_sub_budgets(items_dict, total_budget=budget)
+            for idx, item in enumerate(items_to_buy):
+                if idx < len(allocated_sub_budgets):
+                    item.max_price = allocated_sub_budgets[idx]
 
-        # Complementary Rule Engine
+        # Relational Complementary Rule Engine (Match My Outfit Mode)
         if owned_items and not items_to_buy:
+            from src.agent.semantic_color_engine import CATEGORY_ZONE_MAP
             for owned in owned_items:
-                # Basic color wheel contrast rules
-                target_cat = CategoryEnum.JEANS if owned.category == CategoryEnum.TSHIRT else CategoryEnum.TSHIRT
-                target_color = ColorEnum.GREY if owned.color == ColorEnum.BLACK else ColorEnum.BEIGE
+                owned_cat = owned.category.value if hasattr(owned.category, 'value') else str(owned.category)
+                owned_zone = CATEGORY_ZONE_MAP.get(owned_cat, "top")
                 
+                # If owned item is a top/outerwear -> target bottoms (joggers/jeans)
+                if owned_zone in ["top", "outerwear"]:
+                    target_cat = CategoryEnum.JOGGERS if "hoodie" in owned_cat or "t-shirt" in owned_cat else CategoryEnum.JEANS
+                    # Light-dark contrast
+                    target_color = ColorEnum.GREY if owned.color.value in ["Black", "Navy", "Dark Navy"] else ColorEnum.BLACK
+                else:
+                    # Owned item is bottom -> target top (t-shirt/hoodie)
+                    target_cat = CategoryEnum.TSHIRT
+                    target_color = ColorEnum.WHITE if owned.color.value in ["Black", "Dark Navy", "Charcoal"] else ColorEnum.BLACK
+
                 comp_item = CanonicalShoppingQuery(
                     original_prompt=user_prompt,
                     cleaned_keywords="",
                     category=target_cat,
-                    color=target_color
+                    color=target_color,
+                    max_price=budget
                 )
                 items_to_buy.append(comp_item)
 
         # Fallback if empty
         if not items_to_buy and not owned_items:
             self.last_model_used = "Rule Engine"
-            parsed_raw = parse_user_intent(cleaned_prompt)
-            
+
             def safe_enum(enum_class, val, default):
                 if val and val in [e.value for e in enum_class]:
                     return val
                 return default.value
 
-            canonical = CanonicalShoppingQuery(
-                original_prompt=user_prompt,
-                cleaned_keywords=parsed_raw.cleaned_query or cleaned_prompt,
-                gender=safe_enum(GenderEnum, parsed_raw.gender, GenderEnum.MEN),
-                category=safe_enum(CategoryEnum, parsed_raw.category, CategoryEnum.TSHIRT),
-                color=safe_enum(ColorEnum, parsed_raw.color, ColorEnum.ANY),
-                design=safe_enum(DesignEnum, parsed_raw.design, DesignEnum.ANY),
-                fit=safe_enum(FitEnum, parsed_raw.fit, FitEnum.ANY),
-                sleeve=safe_enum(SleeveEnum, parsed_raw.sleeve, SleeveEnum.ANY),
-                fabric=FabricEnum.ANY,
-                neck=NeckEnum.ANY,
-                occasion=OccasionEnum.ANY,
-                fandom=safe_enum(FandomEnum, parsed_raw.fandom, FandomEnum.NONE),
-                size=parsed_raw.size,
-                quantity=parsed_raw.quantity or 1,
-                max_price=parsed_raw.max_price,
-                min_rating=parsed_raw.min_rating,
-                fast_shipping_requested=parsed_raw.fast_shipping_requested
-            )
-            items_to_buy.append(canonical)
+            def build_canonical(parsed_raw, part_text):
+                return CanonicalShoppingQuery(
+                    original_prompt=user_prompt,
+                    cleaned_keywords=parsed_raw.cleaned_query or part_text,
+                    gender=safe_enum(GenderEnum, parsed_raw.gender, GenderEnum.ALL),
+                    category=safe_enum(CategoryEnum, parsed_raw.category, CategoryEnum.TSHIRT),
+                    color=safe_enum(ColorEnum, parsed_raw.color, ColorEnum.ANY),
+                    design=safe_enum(DesignEnum, parsed_raw.design, DesignEnum.ANY),
+                    fit=safe_enum(FitEnum, parsed_raw.fit, FitEnum.ANY),
+                    sleeve=safe_enum(SleeveEnum, parsed_raw.sleeve, SleeveEnum.ANY),
+                    fabric=FabricEnum.ANY,
+                    neck=NeckEnum.ANY,
+                    occasion=OccasionEnum.ANY,
+                    fandom=safe_enum(FandomEnum, parsed_raw.fandom, FandomEnum.NONE),
+                    size=parsed_raw.size,
+                    quantity=parsed_raw.quantity or 1,
+                    max_price=parsed_raw.max_price,
+                    min_rating=parsed_raw.min_rating,
+                    fast_shipping_requested=parsed_raw.fast_shipping_requested
+                )
+
+            # Check for multi-item conjunctions (e.g. "olive hoodie and black joggers", "shirt with jeans")
+            split_patterns = [r"\s+and\s+", r"\s+with\s+", r"\s*\+\s*", r"\s*&\s*"]
+            parts = []
+            for sp in split_patterns:
+                if re.search(sp, cleaned_prompt):
+                    candidate_parts = [p.strip() for p in re.split(sp, cleaned_prompt) if p.strip()]
+                    if len(candidate_parts) >= 2:
+                        parts = candidate_parts
+                        break
+
+            if len(parts) >= 2:
+                # Only split if AT LEAST TWO parts describe distinct garment categories!
+                # E.g. "tom and jerry oversized t-shirt" -> "tom" has no category, so do NOT split!
+                valid_parts = []
+                for p_text in parts[:3]:
+                    parsed_part = parse_user_intent(p_text)
+                    if parsed_part.category:
+                        valid_parts.append((parsed_part, p_text))
+
+                if len(valid_parts) >= 2:
+                    for parsed_part, p_text in valid_parts:
+                        items_to_buy.append(build_canonical(parsed_part, p_text))
+
+            # If multi-item splitting found >= 2 items, allocate dynamic budgets
+            if len(items_to_buy) >= 2 and budget:
+                from src.agent.bundle_coordinator import DynamicBudgetAllocator
+                items_dict = [{"category": item.category.value} for item in items_to_buy]
+                allocated_sub_budgets = DynamicBudgetAllocator.allocate_sub_budgets(items_dict, total_budget=budget)
+                for idx, item in enumerate(items_to_buy):
+                    if idx < len(allocated_sub_budgets):
+                        item.max_price = allocated_sub_budgets[idx]
+
+            # If still single item or no parts matched
+            if not items_to_buy:
+                parsed_raw = parse_user_intent(cleaned_prompt)
+                items_to_buy.append(build_canonical(parsed_raw, cleaned_prompt))
             
         multi_query = MultiShoppingQuery(original_prompt=user_prompt, items_to_buy=items_to_buy, owned_items=owned_items)
         return multi_query, f"🧠 Normalized by {self.last_model_used}"

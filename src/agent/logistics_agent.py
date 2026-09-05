@@ -277,20 +277,20 @@ class LogisticsAgent:
 
         if dist_km < 60:
             shipping_days = 1
-            speed_label = "⚡ Same-Day / 1-Day Metro Express"
-            tier = "metro_express"
+            speed_label = "1 Day"
+            tier = "1_day"
         elif dist_km < 450:
             shipping_days = 2
-            speed_label = "⚡ 1-2 Days Regional Air Express"
-            tier = "regional_express"
+            speed_label = "2 Days"
+            tier = "2_days"
         elif dist_km < 1200:
             shipping_days = 3
-            speed_label = "✈️ 2-3 Days Fast Air Transit"
-            tier = "national_air"
+            speed_label = "3 Days"
+            tier = "3_days"
         else:
             shipping_days = 4
-            speed_label = "🚚 3-4 Days Standard Surface"
-            tier = "standard_surface"
+            speed_label = "4 Days"
+            tier = "4_days"
 
         return {
             "origin_hub": origin_hub["name"],

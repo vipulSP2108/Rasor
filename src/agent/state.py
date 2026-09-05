@@ -175,6 +175,8 @@ class Product(BaseModel):
     shipping_days: int = Field(default=3, ge=0, description="Estimated delivery days")
     shipping_cost: float = Field(default=0.0, ge=0.0, description="Shipping cost")
     source_url: Optional[str] = Field(default=None, description="Direct URL if scraped/API")
+    image_url: Optional[str] = Field(default=None, description="Primary product image CDN URL")
+    images: List[str] = Field(default_factory=list, description="List of product image URLs")
     specs: Dict[str, Any] = Field(default_factory=dict, description="Key-value specifications")
     discount_codes: List[str] = Field(default_factory=list, description="Applicable discount codes")
     enriched: bool = Field(default=False, description="Whether single-product deep fetch has been done")

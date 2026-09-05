@@ -193,5 +193,31 @@
     ],
     "display_label": "Dhule (India)",
     "source": "osm_nominatim_open_api"
+  },
+  "delhi": {
+    "query": "Delhi",
+    "pincode": "400001",
+    "area": "Delhi",
+    "city": "Delhi, Delhi",
+    "state": "Delhi",
+    "coords": [
+      28.6664535,
+      77.2169781
+    ],
+    "display_label": "Delhi (India)",
+    "source": "osm_nominatim_open_api"
+  },
+  "400078": {
+    "query": "400078",
+    "pincode": "400078",
+    "area": "Indian Naval Dockyard",
+    "city": "Indian Naval Dockyard, Maharashtra",
+    "state": "Maharashtra",
+    "coords": [
+      19.0167,
+      72.85
+    ],
+    "display_label": "Indian Naval Dockyard (400078, Maharashtra)",
+    "source": "zippopotam_open_api"
   }
 }
