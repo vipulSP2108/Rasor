@@ -353,7 +353,10 @@ class BundleCoordinator:
                 color = item.get("color")
                 if hasattr(color, "value"):
                     color = color.value
-                sub_b = min(budget or 3000.0, allocated_budgets[idx] * 1.30) if idx < len(allocated_budgets) and budget else budget
+                # Elastic Search Corridor: Allow each candidate pool to search with up to max(allocated * 1.35, 55% of total budget)
+                # This enables cross-garment compensatory absorption (e.g. 60/40 or 55/45 splits, and high-value pairings)
+                elastic_ceiling = max(allocated_budgets[idx] * 1.35, (budget or 3000.0) * 0.55) if idx < len(allocated_budgets) and budget else (budget or 3000.0)
+                sub_b = min(budget or 3000.0, elastic_ceiling)
                 
                 expanded = self.expand_macro_categories(cat)
                 future = executor.submit(

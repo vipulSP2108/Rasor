@@ -126,16 +126,16 @@ def calculate_detailed_product_shipping(product_specs: dict, user_location_or_pi
     
     if dist_km < 60:
         days = 1
-        speed_label = "⚡ Same-Day / 1-Day Metro Express"
+        speed_label = "1 Day"
     elif dist_km < 450:
         days = 2
-        speed_label = "⚡ 1-2 Days Regional Air Express"
+        speed_label = "2 Days"
     elif dist_km < 1200:
         days = 3
-        speed_label = "✈️ 2-3 Days Fast Transit"
+        speed_label = "3 Days"
     else:
         days = 4
-        speed_label = "🚚 3-4 Days Standard Surface"
+        speed_label = "4 Days"
         
     return {
         "origin_hub": origin_name,

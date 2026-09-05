@@ -1309,7 +1309,7 @@ With `unauthenticated_write_bulk_operations` and `unauthenticated_read_bulk_oper
 ## 5. Rasor Implementation Architecture
 
 ### 5.1 5-Tier Progressive Retrieval Strategy
-In Rasor's [`src/data/shopify_api.py`](file:///Users/aai/Desktop/Rasor/src/data/shopify_api.py), the `ShopifyCatalogProvider` executes an autonomous 5-tier fallback cascade:
+In Rasor's `src/data/shopify_api.py`, the `ShopifyCatalogProvider` executes an autonomous 5-tier fallback cascade:
 
 ```
 Tier 1: products(query: "keywords AND product_type:TYPE AND tag:GENDER")

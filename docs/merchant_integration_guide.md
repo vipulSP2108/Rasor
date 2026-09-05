@@ -6,7 +6,7 @@ This guide outlines the architectural blueprint and standardized protocols for o
 
 ## 1. The `BaseCatalogProvider` Interface Contract
 
-Every merchant provider must inherit from [`src/data/base.py`](file:///Users/aai/Desktop/Rasor/src/data/base.py) and implement the standardized retrieval contract:
+Every merchant provider must inherit from `src/data/base.py` and implement the standardized retrieval contract:
 
 ```python
 class BaseCatalogProvider(ABC):
@@ -63,7 +63,7 @@ flowchart TD
 
 ## 3. Product Normalization Mapping Specification
 
-When normalizing a new merchant's JSON payload into Rasor's [`Product`](file:///Users/aai/Desktop/Rasor/src/state.py) model, map according to this specification:
+When normalizing a new merchant's JSON payload into Rasor's `Product` model, map according to this specification:
 
 | Rasor `Product` Field | Type | Description | Example Standard |
 | :--- | :--- | :--- | :--- |
@@ -86,7 +86,7 @@ When normalizing a new merchant's JSON payload into Rasor's [`Product`](file:///
 
 ## 4. Registering New Merchants in Config & UI
 
-1. Add the merchant to `DataSourceType` in [`src/config.py`](file:///Users/aai/Desktop/Rasor/src/config.py):
+1. Add the merchant to `DataSourceType` in `src/config.py`:
    ```python
    class DataSourceType(str, Enum):
        DEV_MOCK = "dev_mock"
@@ -95,5 +95,5 @@ When normalizing a new merchant's JSON payload into Rasor's [`Product`](file:///
        MYNTRA_LIVE_API = "myntra_live_api"
        GOOGLE_SHOPPING_SCRAPER = "google_shopping_scraper"
    ```
-2. Instantiate the provider in [`api/main.py`](file:///Users/aai/Desktop/Rasor/api/main.py) and [`frontend/app.py`](file:///Users/aai/Desktop/Rasor/frontend/app.py).
+2. Instantiate the provider in `api/main.py`.
 3. The Intent Normalizer (`brain.py`), Bayesian rating scoring, Multimodal VQA inspection, Geodesic Logistics agent, and Headless Checkout engines will function out-of-the-box for the newly registered merchant.

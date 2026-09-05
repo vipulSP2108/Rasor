@@ -95,16 +95,16 @@ flowchart TD
     end
 ```
 
-1. [`src/data/shopify_api.py`](file:///Users/aai/Desktop/Rasor/src/data/shopify_api.py):
+1. `src/data/shopify_api.py`:
    - Implements the 5-tier search relaxation algorithm.
    - Applies client-side attribute filtering (color, size, fit, and max price) over retrieved nodes.
    - Hydrates customer review ratings from local persistent cache.
    - Powers Gateway endpoints: `POST /api/search` and `POST /api/products/by-ids` (see [API Specification §2.B](API_SPECIFICATION.md#b-search-catalog--discovery)).
-2. [`src/data/shopify_cart.py`](file:///Users/aai/Desktop/Rasor/src/data/shopify_cart.py):
+2. `src/data/shopify_cart.py`:
    - Handles headless cart creation and merchandise line-item additions.
    - Extracts and normalizes checkout URLs for seamless UI handoff.
    - Powers Gateway endpoints: `POST /api/cart/create` and `POST /api/cart/add` (see [API Specification §2.F](API_SPECIFICATION.md#f-headless-cart--storefront-mutation)).
-3. [`src/data/shopify_admin.py`](file:///Users/aai/Desktop/Rasor/src/data/shopify_admin.py):
+3. `src/data/shopify_admin.py`:
    - Connects to the Shopify Admin REST API to synchronize externally captured Razorpay transactions.
    - Creates confirmed store orders with full line items, customer details, and payment transaction metadata.
    - Powers Gateway endpoints: `POST /api/shopify/sync` and `GET /api/shopify/orders` (see [API Specification §2.I](API_SPECIFICATION.md#i-settlement-background-reconciler--audit-ledger)).
