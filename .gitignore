@@ -19,9 +19,8 @@ ENV/
 # Streamlit
 .streamlit/
 
-*.md
-docs/*.md
-src/*.md
+# Internal / Private Presentation Notes
+/docs2
 
 # IDE
 .idea/
