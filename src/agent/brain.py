@@ -76,7 +76,8 @@ def calculate_dynamic_composite_match(
     prompt_lower = (user_prompt or "").lower()
     p_title = (product.title or "").lower()
     p_specs = product.specs or {}
-    p_text = f"{product.title} {p_specs.get('fandom_partner', '')} {p_specs.get('design', '')} {p_specs.get('color', '')} {p_specs.get('subclass', '')}".lower()
+    p_tags = " ".join(p_specs.get("tags", [])) if isinstance(p_specs.get("tags"), list) else str(p_specs.get("tags", ""))
+    p_text = f"{product.title} {p_specs.get('fandom_partner', '')} {p_specs.get('design', '')} {p_specs.get('color', '')} {p_specs.get('subclass', '')} {p_tags}".lower()
 
     # 1. Semantic Affinity Tier & Conflicting Character Check
     affinity_tier = get_semantic_affinity_tier(product, target_char_key, target_char_terms, user_prompt)
@@ -97,10 +98,57 @@ def calculate_dynamic_composite_match(
         base_score += 0.05  # General garment when specific character was asked
 
     # 3. Category satisfaction
-    cat_match = bool(re.search(r"\b(t-?shirt|tee|shirt|hoodie|joggers|jeans|pants|vest|polo|top|shorts)\b", prompt_lower))
-    if cat_match:
-        if any(cat in p_title or cat in str(p_specs.get("subclass", "")).lower() for cat in ["t-shirt", "tee", "shirt", "tshirt", "hoodie", "polo"]):
-            base_score += 0.16
+    target_cat = None
+    if canonical and hasattr(canonical, "category") and canonical.category and getattr(canonical.category, "value", str(canonical.category)) != "general":
+        target_cat = getattr(canonical.category, "value", str(canonical.category)).lower()
+
+    if not target_cat:
+        if re.search(r"\b(hoodie|sweatshirt|pullover)\b", prompt_lower):
+            target_cat = "hoodie"
+        elif re.search(r"\b(t-?shirt|tee|tshirt)\b", prompt_lower):
+            target_cat = "t-shirt"
+        elif re.search(r"\b(joggers?|trackpants?|sweatpants?)\b", prompt_lower):
+            target_cat = "joggers"
+        elif re.search(r"\b(jeans?|denim)\b", prompt_lower):
+            target_cat = "jeans"
+        elif re.search(r"\b(shirt|button up)\b", prompt_lower):
+            target_cat = "shirt"
+        elif re.search(r"\b(vest|tank)\b", prompt_lower):
+            target_cat = "vest"
+        elif re.search(r"\b(polo)\b", prompt_lower):
+            target_cat = "polo"
+        elif re.search(r"\b(shorts?)\b", prompt_lower):
+            target_cat = "shorts"
+
+    p_type = f"{p_title} {p_specs.get('subclass', '')} {p_specs.get('shopify_product_type', '')}".lower()
+
+    if target_cat:
+        if target_cat in ("hoodie", "sweatshirt"):
+            if "hoodie t-shirt" in p_type or "hoodie tee" in p_type:
+                base_score += 0.08  # Hybrid hooded t-shirt
+            elif any(h in p_type for h in ["hoodie", "hoodies", "sweatshirt", "sweatshirts", "pullover"]):
+                base_score += 0.20  # Genuine hoodie / sweatshirt match
+            else:
+                base_score -= 0.15  # Category mismatch (user asked for hoodie, got t-shirt/vest)
+        elif target_cat in ("t-shirt", "tee"):
+            if any(t in p_type for t in ["t-shirt", "tee", "tshirt", "topwear"]):
+                base_score += 0.18
+            else:
+                base_score -= 0.15
+        elif target_cat in ("joggers", "trackpants"):
+            if any(j in p_type for j in ["jogger", "trackpant", "sweatpant", "pyjama", "pajama"]):
+                base_score += 0.18
+            else:
+                base_score -= 0.15
+        elif target_cat in ("jeans", "denim"):
+            if any(j in p_type for j in ["jean", "denim"]):
+                base_score += 0.18
+            else:
+                base_score -= 0.15
+        elif target_cat in p_type:
+            base_score += 0.18
+        else:
+            base_score -= 0.12
     else:
         base_score += 0.10
 
@@ -161,7 +209,7 @@ def calculate_dynamic_composite_match(
     # 7. Token overlap bonus for product title
     stopwords = {"for", "the", "in", "of", "and", "with", "a", "an", "to", "at", "by", "on", "men", "mens", "women", "womens"}
     query_tokens = [w for w in re.findall(r"[a-z0-9]+", prompt_lower) if w not in stopwords and len(w) > 1]
-    title_tokens = set(re.findall(r"[a-z0-9]+", p_title))
+    title_tokens = set(re.findall(r"[a-z0-9]+", f"{p_title} {p_specs.get('fandom_partner', '')} {p_tags}"))
     overlap_count = sum(1 for tok in query_tokens if tok in title_tokens)
     overlap_ratio = overlap_count / max(len(query_tokens), 1)
     overlap_bonus = 0.05 * overlap_ratio
@@ -464,7 +512,7 @@ class AgentBrain:
             for data in item_list:
                 try:
                     data["original_prompt"] = user_prompt
-                    data["gender"] = data.get("gender", "men") if data.get("gender") in [e.value for e in GenderEnum] else "men"
+                    data["gender"] = data.get("gender") if data.get("gender") in [e.value for e in GenderEnum] else GenderEnum.ALL.value
                     data["category"] = data.get("category", "t-shirt") if data.get("category") in [e.value for e in CategoryEnum] else "t-shirt"
                     data["color"] = data.get("color", "Any") if data.get("color") in [e.value for e in ColorEnum] else "Any"
                     data["design"] = data.get("design", "Any") if data.get("design") in [e.value for e in DesignEnum] else "Any"
@@ -545,7 +593,7 @@ class AgentBrain:
                 return CanonicalShoppingQuery(
                     original_prompt=user_prompt,
                     cleaned_keywords=parsed_raw.cleaned_query or part_text,
-                    gender=safe_enum(GenderEnum, parsed_raw.gender, GenderEnum.MEN),
+                    gender=safe_enum(GenderEnum, parsed_raw.gender, GenderEnum.ALL),
                     category=safe_enum(CategoryEnum, parsed_raw.category, CategoryEnum.TSHIRT),
                     color=safe_enum(ColorEnum, parsed_raw.color, ColorEnum.ANY),
                     design=safe_enum(DesignEnum, parsed_raw.design, DesignEnum.ANY),
@@ -573,9 +621,16 @@ class AgentBrain:
                         break
 
             if len(parts) >= 2:
+                # Only split if AT LEAST TWO parts describe distinct garment categories!
+                # E.g. "tom and jerry oversized t-shirt" -> "tom" has no category, so do NOT split!
+                valid_parts = []
                 for p_text in parts[:3]:
                     parsed_part = parse_user_intent(p_text)
                     if parsed_part.category:
+                        valid_parts.append((parsed_part, p_text))
+
+                if len(valid_parts) >= 2:
+                    for parsed_part, p_text in valid_parts:
                         items_to_buy.append(build_canonical(parsed_part, p_text))
 
             # If multi-item splitting found >= 2 items, allocate dynamic budgets

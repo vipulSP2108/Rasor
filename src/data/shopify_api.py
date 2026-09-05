@@ -17,6 +17,7 @@ Same search_products() signature as Bewakoof & DevCatalog — fully plug-in comp
 
 import os
 import json
+import re
 from typing import Any, Dict, List, Optional, Set
 from dotenv import load_dotenv
 import requests
@@ -238,35 +239,21 @@ class ShopifyCatalogProvider(BaseCatalogProvider):
     ) -> str:
         """
         Builds a Storefront API `products(query:)` predicate string.
-        Uses only predicates that actually work on the Storefront API:
-          - title:TERM
-          - tag:TERM  (AND-joined for specificity)
-          - product_type:TYPE
-          - available_for_sale:true
+        Delegates to ShopifyCompiler for catalog-verified type aliases (e.g. Hoodies,
+        Track Pant, Casual Shoes) and single-quoted spaced attributes.
         """
-        parts: List[str] = []
-
-        # Add clean keyword terms (Shopify does full-text across title+desc+tags)
-        clean_kw = [w for w in keywords if w not in _NOISE_WORDS and len(w) > 1]
-        if clean_kw:
-            # Join multiple keywords with AND so Shopify narrows down results
-            parts.append(" AND ".join(clean_kw))
-
-        if not _skip(category):
-            parts.append(f"product_type:{category}")
-
-        if not _skip(gender):
-            parts.append(f"tag:{gender}")
-
-        if not _skip(fandom):
-            parts.append(f"tag:{fandom}")
-
-        # Note: color as tag is only useful if merchant actually uses color tags
-        # (common on real stores, not on Shopify demo stores)
-        if not _skip(color):
-            parts.append(f"tag:{color}")
-
-        return " AND ".join(parts) if parts else "available_for_sale:true"
+        cat_val = None if _skip(category) else category
+        gen_val = None if _skip(gender) else gender
+        fan_val = None if _skip(fandom) else fandom
+        col_val = None if _skip(color) else color
+        spec = ShopifyCompiler.compile(
+            raw_keywords=keywords,
+            category=cat_val,
+            gender=gen_val,
+            fandom=fan_val,
+            color=col_val,
+        )
+        return spec.products_query_syntax or "available_for_sale:true"
 
     def _build_search_query(
         self, keywords: List[str], category: Optional[str], gender: Optional[str]
@@ -336,12 +323,11 @@ class ShopifyCatalogProvider(BaseCatalogProvider):
                         raw_nodes.append(n)
 
         # ── Tier 3: Per-keyword union (split & OR) ───────────────────────────
-        if len(raw_nodes) < 5:
+        if len(raw_nodes) < 3:
             print(f"🛍️ [Shopify Tier 3] Per-term union search")
             seen_ids = {n.get("id") for n in raw_nodes}
-            for kw in raw_keywords:
-                if kw in _NOISE_WORDS or len(kw) < 3:
-                    continue
+            unique_kws = list(dict.fromkeys(kw for kw in raw_keywords if kw not in _NOISE_WORDS and len(kw) >= 3))[:4]
+            for kw in unique_kws:
                 batch = self._fetch_via_search(kw, 20) or self._fetch_via_products_query(kw, 20)
                 for node in batch:
                     nid = node.get("id", "")
@@ -675,19 +661,30 @@ class ShopifyCatalogProvider(BaseCatalogProvider):
             elif any(k in title_lower or k in tags_lower for k in ["sleeveless", "tank", "vest"]):
                 sleeve_val = "Sleeveless"
 
-            # Fandom/partner — scan tags for known franchises
-            _fandom_map = {
-                "marvel": "Marvel", "dc": "DC", "batman": "Batman", "avengers": "Marvel",
-                "spiderman": "Marvel", "spider-man": "Marvel",
-                "harry potter": "Harry Potter", "hogwarts": "Harry Potter",
-                "disney": "Disney", "friends": "Friends", "looney tunes": "Looney Tunes",
-                "anime": "Anime", "naruto": "Naruto",
-            }
+            # Fandom/partner — scan tags for Bewakoof X <Partner> or known franchises
             partner_val: Optional[str] = None
-            for key, display in _fandom_map.items():
-                if key in tags_lower or key in title_lower:
-                    partner_val = display
+            for t in tags:
+                if re.match(r"^Bewakoof\s+X\s+", t, re.IGNORECASE):
+                    partner_val = re.sub(r"^Bewakoof\s+X\s+", "", t, flags=re.IGNORECASE).strip()
                     break
+
+            if not partner_val:
+                _fandom_map = {
+                    "marvel": "Marvel", "dc": "DC", "batman": "Batman", "avengers": "Marvel",
+                    "spiderman": "Marvel", "spider-man": "Marvel",
+                    "harry potter": "Harry Potter", "hogwarts": "Harry Potter",
+                    "disney": "Disney", "friends": "Friends", "looney tunes": "Looney Tunes",
+                    "anime": "Anime", "naruto": "Naruto",
+                    "squid game": "Squid Game", "squid": "Squid Game",
+                    "tom & jerry": "Tom & Jerry", "tom and jerry": "Tom & Jerry",
+                    "garfield": "Garfield", "peanuts": "Peanuts", "snoopy": "Peanuts",
+                    "rick and morty": "Rick and Morty", "stranger things": "Stranger Things",
+                    "star wars": "Star Wars", "minions": "Minions",
+                }
+                for key, display in _fandom_map.items():
+                    if key in tags_lower or key in title_lower:
+                        partner_val = display
+                        break
 
             # Gender from tags or passed arg
             gender_val = "Unisex"
@@ -702,6 +699,7 @@ class ShopifyCatalogProvider(BaseCatalogProvider):
             subclass = node.get("productType") or "Clothing"
 
             # ── Build canonical specs dict (same keys as Bewakoof for UI compat) ──
+            product_url = f"https://{self.domain}/products/{handle}" if handle else None
             specs: Dict[str, Any] = {
                 # Shared keys used by frontend
                 "gender":           gender_val,
@@ -720,6 +718,9 @@ class ShopifyCatalogProvider(BaseCatalogProvider):
                 "image_url":        image_url,
                 "all_images":       all_images,
                 "discount_offer":   None,
+                "handle":           handle,
+                "url":              product_url,
+                "tags":             tags,
                 # Shopify-specific (needed for Phase 2 cart mutations)
                 "shopify_gid":      raw_id,
                 "variant_ids":      variant_ids,

@@ -7,8 +7,14 @@ Public API:
                     get_product_color, resolve_handle, parse_requested_sizes
   - Taxonomies: SPELL_CORRECTIONS, SYNONYM_MAP, FANDOM_KNOWLEDGE_GRAPH,
                 CHARACTER_ENTITY_MAP, ENTITY_FRANCHISE_MAP, VIBE_MAP,
-                CATEGORY_TAXONOMY, COLOR_TAXONOMY, etc.
+                CATEGORY_TAXONOMY, COLOR_TAXONOMY, FIT_CANONICAL_MAP,
+                SLEEVE_CANONICAL_MAP, CATEGORY_SHOPIFY_TYPE_ALIASES,
+                PLUS_SIZE_KEYWORDS, etc.
   - NativeLLMHook: Built-in LLM endpoint accessor for Gemini & Grok/Groq.
+
+See README.md "Changelog" for the catalog audit that drove the additions
+below (FIT_CANONICAL_MAP, SLEEVE_CANONICAL_MAP, CATEGORY_SHOPIFY_TYPE_ALIASES,
+PLUS_SIZE_KEYWORDS are new; every other table was expanded in place).
 """
 
 from src.mapping.contracts import (
@@ -28,12 +34,16 @@ from src.mapping.taxonomy import (
     ENTITY_FRANCHISE_MAP,
     VIBE_MAP,
     CATEGORY_TAXONOMY,
+    CATEGORY_SHOPIFY_TYPE_ALIASES,
     MACRO_CATEGORY_EXPANSIONS,
     COLOR_TAXONOMY,
     FANDOM_HANDLE_MAP,
     DESIGN_HANDLE_MAP,
     CATEGORY_SLEEVE_HANDLE_MAP,
     GENDER_FALLBACK_MAP,
+    FIT_CANONICAL_MAP,
+    SLEEVE_CANONICAL_MAP,
+    PLUS_SIZE_KEYWORDS,
     NOISE_WORDS,
 )
 from src.mapping.compilers import (
@@ -88,11 +98,15 @@ __all__ = [
     "ENTITY_FRANCHISE_MAP",
     "VIBE_MAP",
     "CATEGORY_TAXONOMY",
+    "CATEGORY_SHOPIFY_TYPE_ALIASES",
     "MACRO_CATEGORY_EXPANSIONS",
     "COLOR_TAXONOMY",
     "FANDOM_HANDLE_MAP",
     "DESIGN_HANDLE_MAP",
     "CATEGORY_SLEEVE_HANDLE_MAP",
     "GENDER_FALLBACK_MAP",
+    "FIT_CANONICAL_MAP",
+    "SLEEVE_CANONICAL_MAP",
+    "PLUS_SIZE_KEYWORDS",
     "NOISE_WORDS",
 ]

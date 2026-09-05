@@ -447,9 +447,17 @@ To prevent size drift across multi-turn conversational interactions, sizing reso
 2. **User Profile Default:** Persistent setting stored in user preferences (`defaultSize: "XL"`).
 3. **In-Stock Catalog Variant:** First available variant GID from the merchant's live inventory.
 
+### 2.7 Decoupled Query Intent to Catalog Schema & Semantic Mapping Subsystem (`src/mapping/`)
+To eliminate tight coupling between conversational LLMs and merchant catalog schemas, Rasor features a decoupled, contract-driven semantic mapping subsystem (`CatalogMappingInput` $\rightarrow$ `ResolvedCatalogIntent`) audited against a live export of **4,610 products / 16,032 variants** (`shopify_import.csv`):
+* **100% Catalog Coverage:** Elevates real category-to-type matching from 74.9% to **100.0%** (supporting 748 Mobile Covers, Dresses, Pyjamas, Clogs, Boxers, Sweaters) and color taxonomy recognition from 80.1% to **100.0%** (Multicolor, Pink, Off-White).
+* **Multi-Store Query Compilation:** Emits multi-type OR-grouped clauses (`(product_type:Joggers OR product_type:'Track Pant')`), quotes multi-word Shopify types (`product_type:'Mobile Covers'`), and removes legacy dead `product_type:Clothing` filters on unclassified queries to prevent empty search result sets.
+* **Fandom Lore Graph & Live Collection Routing:** Maps 16 brand IP partners (1,144 catalog items across Garfield, Peanuts, Squid Game, NASA, Stranger Things, Minions) and normalizes punctuation (`Tom & Jerry` $\rightarrow$ `looney-tunes-merchandise`).
+* **19 Sizing & Fit Styles + Plus-Size:** Full canonicalization for 19 catalog fits (Straight, Super Loose, Boxy, Wide Leg, Bootcut), 4 sleeve styles, and first-class plus-size modeling (`plus_size: Optional[bool]`) for 299 catalog items.
+* **Sub-Millisecond Execution:** Operates completely offline in $<1\text{ms}$ (~$848\mu\text{s}$) with 30 regression tests in `tests/test_intent_catalog_mapper.py` guaranteeing zero silent degradation.
+
 ---
 
-### 2.7 Machine-Readable Discovery Protocol (ACP-2026.1)
+### 2.8 Machine-Readable Discovery Protocol (ACP-2026.1)
 The application exposes public machine-readable discovery manifests conforming to the Agentic Commerce Protocol:
 * `GET /.well-known/agentic-commerce.json`: Merchant identity, system of record declaration, supported mandate standards (`AP2`, `UAP`), and API endpoint registries.
 * `GET /api/v1/acp/catalog.json`: Machine-consumable inventory feed with structured variant GIDs, dimensions, and stock status for autonomous AI crawler consumption.

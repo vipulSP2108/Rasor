@@ -9,6 +9,7 @@ Compiles standardized semantic intent into store-specific query protocols:
 """
 
 from typing import Any, Dict, List, Optional
+import re
 from src.mapping.contracts import (
     BewakoofQuerySpec,
     ShopifyQuerySpec,
@@ -16,6 +17,7 @@ from src.mapping.contracts import (
     SearchTierConfig,
 )
 from src.mapping.taxonomy import (
+    CATEGORY_SHOPIFY_TYPE_ALIASES,
     CATEGORY_SLEEVE_HANDLE_MAP,
     CATEGORY_TAXONOMY,
     DESIGN_HANDLE_MAP,
@@ -27,6 +29,37 @@ from src.mapping.taxonomy import (
 
 class BewakoofCompiler:
     """Compiles normalized intent into Bewakoof collection handles and API params."""
+
+    # Raw/free-typed category tokens -> canonical CATEGORY_TAXONOMY keys.
+    # This is a local safety net independent of normalize_category(): several
+    # call sites (including this class's own unit tests) invoke the compiler
+    # directly with an un-normalized category string, so it needs its own
+    # alias table. Kept in sync with CATEGORY_TAXONOMY's synonym lists.
+    _CATEGORY_ALIAS_MAP: Dict[str, str] = {
+        "tshirt": "t-shirt", "tee": "t-shirt", "topwear": "t-shirt",
+        "hoodie": "hoodie", "sweatshirt": "sweatshirt", "jacket": "hoodie",
+        "sweater": "sweater", "sweaters": "sweater", "knitwear": "sweater",
+        "joggers": "joggers", "trackpants": "joggers", "trackpant": "joggers",
+        "sweatpants": "joggers",
+        "jeans": "jeans", "denim": "jeans",
+        "shirt": "shirt",
+        "dress": "dress", "dresses": "dress",
+        "pyjama": "pyjama", "pyjamas": "pyjama", "pajama": "pyjama", "pajamas": "pyjama",
+        "nightsuit": "pyjama",
+        "boxer": "boxer", "boxers": "boxer",
+        "slider": "sliders", "sandal": "sliders", "slipper": "sliders",
+        "clog": "clogs", "clogs": "clogs", "crocs": "clogs",
+        "shoes": "footwear", "sneakers": "footwear", "sneaker": "footwear",
+        "casualshoes": "footwear",
+        "mobilecover": "mobile-cover", "mobilecovers": "mobile-cover",
+        "mobilecase": "mobile-cover", "phonecase": "mobile-cover",
+        "phonecover": "mobile-cover", "phonecases": "mobile-cover",
+        "phonecovers": "mobile-cover", "backcover": "mobile-cover",
+        "duffelbag": "duffel-bag", "dufflebag": "duffel-bag", "gymbag": "duffel-bag",
+        "bag": "duffel-bag", "bags": "duffel-bag", "backpack": "duffel-bag",
+        "cap": "cap", "caps": "cap", "hat": "cap",
+        "coord": "co-ord", "coords": "co-ord", "coordinateset": "co-ord",
+    }
 
     @staticmethod
     def compile(
@@ -43,9 +76,27 @@ class BewakoofCompiler:
 
         # 1. Fandom priority (highest specificity)
         if fandom and fandom.lower() not in ("none", "", "any"):
-            fl = fandom.lower().replace(" / cartoons", "").strip()
+            # Normalize punctuation variants before matching against
+            # FANDOM_HANDLE_MAP keys. Real catalog data uses "&" (e.g. the
+            # literal "Bewakoof X Tom & Jerry" fandom partner string), while
+            # this file's keys use "and" ("tom and jerry") - a plain
+            # substring check between the two never matched, silently
+            # falling through to the generic gender collection for every
+            # Tom & Jerry product (39 in the audited catalog). See README
+            # changelog. Also collapse repeated whitespace and periods
+            # (e.g. "S.W.Smiley") so minor formatting differences don't
+            # cause the same failure for other partners.
+            fl = (
+                fandom.lower()
+                .replace(" / cartoons", "")
+                .replace("&", " and ")
+                .replace(".", "")
+                .strip()
+            )
+            fl = re.sub(r"\s+", " ", fl)
             for key, handle in FANDOM_HANDLE_MAP.items():
-                if fl in key or key in fl:
+                key_norm = key.replace("&", " and ")
+                if fl in key_norm or key_norm in fl:
                     fandom_detected = key.title()
                     return BewakoofQuerySpec(
                         handle=handle,
@@ -65,15 +116,27 @@ class BewakoofCompiler:
                 fandom_detected=None,
             )
 
-        # 3. Design theme priority (typography, printed, washed)
+        # 3. Design theme priority (typography, printed, washed, and the newer
+        #    catalog-verified themes: checked, color block, striped,
+        #    embroidered, self design, applique, camouflage, ombre, tie & dye,
+        #    all over print - see README changelog)
         if design and design.lower() not in ("any", "", "solid"):
             dl = design.lower()
             design_key_map = {
                 "oversized fit": "oversized",
                 "typography":    "typography",
                 "graphic print": "printed",
-                "all over print":"printed",
+                "all over print":"all over print",
                 "washed":        "acid wash",
+                "checked":       "checked",
+                "color block":   "color block",
+                "striped":       "striped",
+                "embroidered":   "embroidered",
+                "self design":   "self design",
+                "applique":      "applique",
+                "camouflage":    "camouflage",
+                "ombre":         "ombre",
+                "tie & dye":     "tie & dye",
             }
             mapped = design_key_map.get(dl, dl)
             if mapped in DESIGN_HANDLE_MAP:
@@ -88,16 +151,7 @@ class BewakoofCompiler:
         # 3. Category + sleeve matrix
         if cat:
             cl = cat.replace("-", "").replace(" ", "")
-            alias_map = {
-                "tshirt": "t-shirt", "tee": "t-shirt", "topwear": "t-shirt",
-                "hoodie": "hoodie", "sweatshirt": "sweatshirt", "jacket": "hoodie",
-                "joggers": "joggers", "trackpants": "joggers", "sweatpants": "joggers",
-                "jeans": "jeans", "denim": "jeans",
-                "shirt": "shirt",
-                "slider": "sliders", "sandal": "sliders", "slipper": "sliders",
-                "shoes": "footwear", "sneakers": "footwear",
-            }
-            normalized_cat = alias_map.get(cl, cl)
+            normalized_cat = BewakoofCompiler._CATEGORY_ALIAS_MAP.get(cl, cl)
 
             sleeve_key = None
             if sleeve:
@@ -164,22 +218,47 @@ class ShopifyCompiler:
             parts.append(" AND ".join(clean_kw))
 
         prod_type = None
-        if category and category.lower() not in ("any", "none", "clothing", "all", ""):
-            c_def = CATEGORY_TAXONOMY.get(category.lower())
-            prod_type = c_def.shopify_product_type if c_def else category.title()
-            parts.append(f"product_type:{prod_type}")
+        type_aliases: List[str] = []
+        if category and category.lower() not in ("any", "none", "all", ""):
+            cat_key = category.lower()
+            c_def = CATEGORY_TAXONOMY.get(cat_key)
+            # Prefer the full list of real catalog Type values for this
+            # category (a category can legitimately span more than one
+            # literal Shopify `Type`, e.g. joggers -> Joggers + Track Pant).
+            # See README changelog: the previous single-value lookup also
+            # forced a `product_type:Clothing` filter for the "general"/
+            # unclassified bucket even though no product in the store has
+            # that type, which meant every unclassified query returned zero
+            # Shopify results. An empty alias list (as "general" now has)
+            # means "don't filter by product_type at all".
+            type_aliases = CATEGORY_SHOPIFY_TYPE_ALIASES.get(
+                cat_key,
+                [c_def.shopify_product_type] if (c_def and c_def.shopify_product_type) else [],
+            )
+            type_aliases = [t for t in type_aliases if t]
+            if type_aliases:
+                prod_type = type_aliases[0]
+                if len(type_aliases) == 1:
+                    parts.append(f"product_type:{_quote_if_needed(type_aliases[0])}")
+                else:
+                    or_clause = " OR ".join(f"product_type:{_quote_if_needed(t)}" for t in type_aliases)
+                    parts.append(f"({or_clause})")
 
         if gender and gender.lower() not in ("any", "unisex", "all", ""):
             parts.append(f"tag:{gender.lower()}")
             tags.append(gender.lower())
 
         if fandom and fandom.lower() not in ("none", "any", ""):
-            parts.append(f"tag:{fandom.lower()}")
-            tags.append(fandom.lower())
+            f_lower = fandom.lower()
+            # Only add tag filter if fandom keywords are not already present in query
+            if not any(f_term in " ".join(clean_kw) for f_term in f_lower.split() if f_term not in NOISE_WORDS and len(f_term) > 2):
+                tag_clause = f"(tag:{_quote_if_needed(f'Bewakoof X {fandom}')} OR tag:{_quote_if_needed(fandom)})"
+                parts.append(tag_clause)
+                tags.append(fandom)
 
         if color and color.lower() not in ("any", "all", "multi", ""):
-            parts.append(f"tag:{color.lower()}")
-            tags.append(color.lower())
+            parts.append(f"tag:{_quote_if_needed(color.title())}")
+            tags.append(color.title())
 
         products_q = " AND ".join(parts) if parts else "available_for_sale:true"
 
@@ -200,6 +279,14 @@ class ShopifyCompiler:
         )
 
 
+def _quote_if_needed(value: str) -> str:
+    """Shopify's search-query grammar requires quoting any value that
+    contains a space (e.g. `product_type:'Track Pant'`); single-word values
+    are fine unquoted. Centralized here so both the single- and OR-clause
+    branches above stay consistent."""
+    return f"'{value}'" if " " in value else value
+
+
 class UniversalCompiler:
     """Compiles normalized intent into generic in-memory predicates."""
 
@@ -216,6 +303,7 @@ class UniversalCompiler:
         fandom: Optional[str],
         max_price: Optional[float],
         min_rating: Optional[float],
+        plus_size: Optional[bool] = None,
     ) -> UniversalFilterSpec:
         tags = []
         if gender and gender.lower() not in ("any", "all"):
@@ -226,6 +314,8 @@ class UniversalCompiler:
             tags.append(fandom.lower())
         if design and design.lower() not in ("any", "solid"):
             tags.append(design.lower())
+        if plus_size:
+            tags.append("plus size")
 
         return UniversalFilterSpec(
             category=category,
@@ -240,6 +330,7 @@ class UniversalCompiler:
             max_price=max_price,
             min_rating=min_rating,
             tags_required=tags,
+            plus_size=plus_size,
         )
 
 
@@ -254,6 +345,7 @@ class SearchTierCompiler:
         design: Optional[str],
         sizes: List[str],
         max_price: Optional[float],
+        color_family: Optional[str] = None,
     ) -> List[SearchTierConfig]:
         tiers = [
             SearchTierConfig(
@@ -286,6 +378,14 @@ class SearchTierCompiler:
                 description="Preserves category, size, and budget; matches color family or complementary shades",
                 active_predicates={
                     "category": category,
+                    # Previously this tier dropped color matching entirely
+                    # (identical in effect to going straight to Tier 4), even
+                    # though its own name/description promise a color-*family*
+                    # match rather than no color constraint at all. Now it
+                    # actually carries the broader family (e.g. "Blue" instead
+                    # of "Navy") so a Navy search can still surface other blue
+                    # items here before Tier 4 drops color completely.
+                    "color_family": color_family,
                     "sizes": sizes,
                     "max_price": max_price,
                 }

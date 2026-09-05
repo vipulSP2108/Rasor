@@ -46,6 +46,7 @@ class CatalogMappingInput(BaseModel):
     max_price: Optional[float] = Field(default=None, description="Maximum price cap in local currency")
     min_rating: Optional[float] = Field(default=None, description="Minimum product rating (0.0 to 5.0)")
     negative_keywords: List[str] = Field(default_factory=list, description="Terms explicitly negated/excluded by the user")
+    plus_size: Optional[bool] = Field(default=None, description="Whether the user explicitly requested plus-size fit (catalog-verified: ~6.5% of products are tagged 'Plus Size' in-title)")
     target_store: StorePlatformEnum = Field(default=StorePlatformEnum.UNIVERSAL, description="Target merchant or platform")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Arbitrary extension payload (e.g., user profile, session state)")
 
@@ -152,6 +153,7 @@ class UniversalFilterSpec(BaseModel):
     fandom: Optional[str] = None
     max_price: Optional[float] = None
     min_rating: Optional[float] = None
+    plus_size: Optional[bool] = None
     tags_required: List[str] = Field(default_factory=list)
 
 
@@ -195,6 +197,7 @@ class ResolvedCatalogIntent(BaseModel):
     normalized_fabric: Optional[str] = Field(default=None, description="Standardized fabric (e.g. 'Cotton')")
     normalized_neck: Optional[str] = Field(default=None, description="Standardized neckline (e.g. 'Round Neck')")
     normalized_fandom: Optional[str] = Field(default=None, description="Standardized franchise or IP partner (e.g. 'Marvel')")
+    normalized_plus_size: Optional[bool] = Field(default=None, description="Whether plus-size fit was requested or detected in the query text")
     
     vibe_applied: Optional[str] = Field(default=None, description="Aesthetic vibe detected/applied (e.g. 'streetwear')")
     inferred_vibe_tags: List[str] = Field(default_factory=list, description="Tags inferred from aesthetic vibe")

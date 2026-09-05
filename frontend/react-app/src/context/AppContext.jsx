@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react'
-import { getProductsByIds, cancelPaymentLink } from '../api/client'
+import { getProductsByIds, cancelPaymentLink, clearBackendCaches } from '../api/client'
 
 const AppContext = createContext(null)
 
@@ -756,7 +756,8 @@ const DEFAULT_CANDIDATE_BUFFER = [
     })
   }, [])
 
-  const clearStorageCaches = useCallback(() => {
+  const clearStorageCaches = useCallback(async (options = {}) => {
+    const { includeLocalStorage = false } = options
     try {
       sessionStorage.removeItem('rasor_product_cache')
       sessionStorage.removeItem('rasor_search_state')
@@ -770,6 +771,32 @@ const DEFAULT_CANDIDATE_BUFFER = [
       sessionStorage.removeItem('rasor_studio_expanded')
       localStorage.removeItem('rasor_persistent_history')
       localStorage.removeItem('rasor_compare_ids')
+      localStorage.removeItem('rasor_active_plink')
+      localStorage.removeItem('rasor_rescue_module_active')
+      localStorage.removeItem('rasor_cascade_state')
+
+      // Purge backend VQA & Deep Enrichment in-memory caches
+      try {
+        await clearBackendCaches()
+      } catch (backendErr) {
+        console.warn('Backend cache clear notice:', backendErr)
+      }
+
+      if (includeLocalStorage) {
+        localStorage.removeItem('rasor_config_state')
+        localStorage.removeItem('rasor_mandates_by_email')
+        localStorage.removeItem('rasor_rzp_token')
+        localStorage.removeItem('rasor_rzp_token_max_limit')
+        localStorage.removeItem('rasor_cart_state')
+        localStorage.removeItem('rasor_cart_id')
+        localStorage.removeItem('rasor_cart_checkout_url')
+        localStorage.removeItem('rasor_voice_channels')
+        localStorage.removeItem('rasor_user_profile')
+        setConfig(DEFAULT_CONFIG)
+        setCart({ ...DEFAULT_CART, cartId: `cart_${Date.now()}` })
+        setMandatesByEmail({})
+      }
+
       setProductCache({})
       setSearchHistory([])
       setHistoryRecords([])
@@ -793,7 +820,11 @@ const DEFAULT_CANDIDATE_BUFFER = [
       setStudioViewportModeState('chat')
       setStudioActiveStageBundleState(null)
       setStudioExpandedLooksState({})
-    } catch (e) {}
+      return true
+    } catch (e) {
+      console.error('Failed to clear storage caches:', e)
+      return false
+    }
   }, [])
 
   const restoreSearchSnapshot = useCallback((snapshotId) => {

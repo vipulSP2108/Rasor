@@ -33,4 +33,5 @@ export const postPaymentRefund = (data) => api.post('/api/checkout/post-payment-
 export const coordinateBundle = (data) => api.post('/api/bundle/coordinate', data)
 export const matchOutfit = (data) => api.post('/api/outfit/match', data)
 export const extractGarmentImage = (data) => api.post('/api/outfit/extract-image', data)
+export const clearBackendCaches = () => api.post('/api/cache/clear')
 

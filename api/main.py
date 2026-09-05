@@ -2853,7 +2853,25 @@ def estimate_logistics(req: LogisticsEstimateRequest):
         }
     except Exception as e:
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+@app.post("/api/cache/clear", tags=["System Diagnostics"], summary="Purge In-Memory Backend Search & VQA Caches")
+def clear_backend_caches():
+    try:
+        from src.agent.brain import _VQA_CACHE
+        from src.data.bewakoof_api import _DEEP_ENRICHMENT_CACHE
+        vqa_count = len(_VQA_CACHE)
+        enrich_count = len(_DEEP_ENRICHMENT_CACHE)
+        _VQA_CACHE.clear()
+        _DEEP_ENRICHMENT_CACHE.clear()
+        return {
+            "status": "success",
+            "message": f"Purged {vqa_count} VQA scans and {enrich_count} deep enrichment records.",
+            "cleared": {
+                "vqa_cache": vqa_count,
+                "enrichment_cache": enrich_count
+            }
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 @app.post("/api/compare", tags=["Geodesic Logistics & Comparison"], summary="Multi-Product Comparative Analysis Matrix")
 def compare(req: CompareRequest):

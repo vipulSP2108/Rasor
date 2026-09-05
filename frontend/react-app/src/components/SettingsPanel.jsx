@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { Key, ShieldCheck, PlusCircle, CheckCircle2, AlertCircle, Trash2, Database, Activity } from 'lucide-react'
+import { Key, ShieldCheck, PlusCircle, CheckCircle2, AlertCircle, Trash2, Database, Activity, RotateCcw, Sparkles } from 'lucide-react'
 import { useApp, getStorageUsage } from '../context/AppContext'
 import { useVoice } from '../hooks/useVoice'
 import { bulkCancelPaymentLinks, cleanStaleRescueLinks } from '../api/client'
@@ -74,10 +74,35 @@ export default function SettingsPanel() {
   const { voices, speak, voiceChannels, setVoiceChannel } = useVoice()
   const curr = config.currency === 'INR' ? '₹' : '$'
   const [isDeletingLinks, setIsDeletingLinks] = useState(false)
+  const [isPurgingCache, setIsPurgingCache] = useState(false)
   const [storageInfo, setStorageInfo] = useState(() => getStorageUsage())
 
   const refreshStorage = () => {
     setStorageInfo(getStorageUsage())
+  }
+
+  const handlePurgeCache = async (includeLocal = false) => {
+    if (includeLocal) {
+      const confirmReset = window.confirm(
+        '⚠️ Factory Reset Confirmation:\n\nThis will completely wipe all saved settings, custom API keys, and your active Razorpay Mandate Token.\n\nAre you sure you want to wipe everything?'
+      )
+      if (!confirmReset) return
+    }
+
+    setIsPurgingCache(true)
+    try {
+      await clearStorageCaches({ includeLocalStorage: includeLocal })
+      refreshStorage()
+      if (includeLocal) {
+        toast.success('🔄 Factory reset complete! All local storage & caches wiped.', { duration: 4500 })
+      } else {
+        toast.success('🧹 Caches Purged! Backend VQA, product cache & search state cleared. Settings & Mandates preserved.', { icon: '⚡', duration: 4500 })
+      }
+    } catch (err) {
+      toast.error('Failed to purge cache: ' + (err.message || 'Unknown error'))
+    } finally {
+      setIsPurgingCache(false)
+    }
   }
 
   useEffect(() => {
@@ -117,9 +142,75 @@ export default function SettingsPanel() {
   return (
     <div className="settings-panel animate-fade-in" style={{ maxWidth: 880, margin: '0 auto' }}>
       <div className="page-title" style={{ fontSize: '1.4rem', fontWeight: 700, marginBottom: 4 }}>⚙️ System Settings & Mandates</div>
-      <p className="page-subtitle" style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: 24 }}>
+      <p className="page-subtitle" style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: 20 }}>
         Configure AP2 autonomous execution, mandate token limits, guardrails, and data sources
       </p>
+
+      {/* ── Quick Cache & Benchmark Actions ── */}
+      <div style={{
+        background: 'linear-gradient(135deg, rgba(30, 41, 59, 0.7) 0%, rgba(15, 23, 42, 0.8) 100%)',
+        border: '1px solid rgba(148, 163, 184, 0.15)',
+        borderRadius: 12,
+        padding: '16px 20px',
+        marginBottom: 24,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        flexWrap: 'wrap',
+        gap: 14,
+        boxShadow: '0 4px 20px rgba(0,0,0,0.2)'
+      }}>
+        <div style={{ maxWidth: '60%' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+            <span style={{ fontSize: '1.1rem' }}>⚡</span>
+            <strong style={{ fontSize: '0.95rem', color: '#f8fafc' }}>Search & AI Cache Management</strong>
+            <span className="badge badge-cyan" style={{ fontSize: '0.68rem' }}>Fast Diff Testing</span>
+          </div>
+          <p style={{ fontSize: '0.78rem', color: '#94a3b8', margin: 0, lineHeight: 1.4 }}>
+            Purge backend VQA/Enrichment caches and active browser search buffers to test ranking improvements (e.g. Hoodies vs T-Shirts) with zero cached bias.
+          </p>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            className="btn btn-primary btn-sm"
+            disabled={isPurgingCache}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              fontSize: '0.82rem',
+              fontWeight: 600,
+              padding: '8px 14px',
+              background: 'linear-gradient(135deg, #0ea5e9, #3b82f6)',
+              border: 'none',
+              cursor: isPurgingCache ? 'not-allowed' : 'pointer',
+              opacity: isPurgingCache ? 0.7 : 1
+            }}
+            onClick={() => handlePurgeCache(false)}
+          >
+            <RotateCcw size={14} className={isPurgingCache ? 'animate-spin' : ''} />
+            {isPurgingCache ? 'Purging...' : 'Clear Cache & Re-test'}
+          </button>
+
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            disabled={isPurgingCache}
+            style={{
+              color: '#f87171',
+              border: '1px solid rgba(239, 68, 68, 0.3)',
+              fontSize: '0.78rem',
+              padding: '8px 12px',
+              background: 'rgba(239, 68, 68, 0.08)'
+            }}
+            onClick={() => handlePurgeCache(true)}
+            title="Wipe all settings, API keys, and mandate tokens"
+          >
+            <Trash2 size={13} /> Reset All (Wipe LocalStorage)
+          </button>
+        </div>
+      </div>
 
       {/* ── Razorpay Mandate Token Section ── */}
       <Section icon={<Key size={18} color="#fbbf24" />} title="Razorpay Recurring Mandate Token (Demo 2)">
@@ -436,29 +527,49 @@ export default function SettingsPanel() {
             </div>
           </div>
 
-          <button
-            type="button"
-            className="btn btn-sm btn-full"
-            style={{
-              background: 'linear-gradient(135deg, rgba(239, 68, 68, 0.2), rgba(245, 158, 11, 0.2))',
-              border: '1px solid #ef4444',
-              color: '#fca5a5',
-              fontWeight: 700,
-              fontSize: '0.78rem',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: 6,
-              padding: '8px 12px'
-            }}
-            onClick={() => {
-              clearStorageCaches()
-              refreshStorage()
-              toast.success('🧹 Caches Purged! Storage footprint reduced & latency reset.', { icon: '⚡' })
-            }}
-          >
-            <Trash2 size={13} /> Purge Heavy Search & Product Caches (Restore Peak Latency)
-          </button>
+          <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
+            <button
+              type="button"
+              className="btn btn-sm btn-full"
+              disabled={isPurgingCache}
+              style={{
+                background: 'linear-gradient(135deg, rgba(56, 189, 248, 0.15), rgba(59, 130, 246, 0.15))',
+                border: '1px solid #38bdf8',
+                color: '#bae6fd',
+                fontWeight: 700,
+                fontSize: '0.78rem',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 6,
+                padding: '8px 12px'
+              }}
+              onClick={() => handlePurgeCache(false)}
+            >
+              <RotateCcw size={13} className={isPurgingCache ? 'animate-spin' : ''} />
+              Clear Cache & Search State (Preserve Settings)
+            </button>
+            <button
+              type="button"
+              className="btn btn-sm"
+              disabled={isPurgingCache}
+              style={{
+                background: 'rgba(239, 68, 68, 0.12)',
+                border: '1px solid rgba(239, 68, 68, 0.4)',
+                color: '#fca5a5',
+                fontWeight: 600,
+                fontSize: '0.75rem',
+                whiteSpace: 'nowrap',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 5,
+                padding: '8px 12px'
+              }}
+              onClick={() => handlePurgeCache(true)}
+            >
+              <Trash2 size={13} /> Wipe All Storage
+            </button>
+          </div>
         </div>
       </Section>
 

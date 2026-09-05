@@ -26,8 +26,11 @@ from src.mapping.taxonomy import (
     CATEGORY_TAXONOMY,
     ENTITY_FRANCHISE_MAP,
     FANDOM_KNOWLEDGE_GRAPH,
+    FIT_CANONICAL_MAP,
     MACRO_CATEGORY_EXPANSIONS,
     NOISE_WORDS,
+    PLUS_SIZE_KEYWORDS,
+    SLEEVE_CANONICAL_MAP,
     SPELL_CORRECTIONS,
     SYNONYM_MAP,
     VIBE_MAP,
@@ -71,7 +74,8 @@ def get_product_color(title: str, specs: Optional[dict] = None) -> str:
     clean_title = re.sub(r"^(men's|women's|boys'|girls'|unisex)\s+", "", (title or "").lower())
     m = re.match(
         r"^(jet\s+black|dark\s+shadow\s+grey|dark\s+grey|light\s+grey|navy\s+blue|olive\s+green|"
-        r"black|white|grey|gray|green|blue|red|yellow|maroon|beige|brown|orange|pink|purple|teal)\b",
+        r"off\s+white|multi\s*colou?r|hot\s+pink|baby\s+pink|"
+        r"black|white|grey|gray|green|blue|red|yellow|maroon|beige|brown|orange|pink|purple|teal|silver)\b",
         clean_title
     )
     if m:
@@ -136,7 +140,8 @@ def get_semantic_affinity_tier(
     p_fandom = str(p_specs.get("fandom_partner", "")).lower()
     p_design = str(p_specs.get("design", "")).lower()
     p_subclass = str(p_specs.get("subclass", "")).lower()
-    p_text = f"{p_title} {p_fandom} {p_design} {p_subclass}".lower()
+    p_tags = " ".join(p_specs.get("tags", [])) if isinstance(p_specs.get("tags"), list) else str(p_specs.get("tags", ""))
+    p_text = f"{p_title} {p_fandom} {p_design} {p_subclass} {p_tags}".lower()
 
     if target_char_key:
         # 1. Conflicting Character Check
@@ -237,21 +242,9 @@ def normalize_color(color_str: Optional[str]) -> Tuple[Optional[str], Optional[s
     return color_str.title(), color_str.title(), "#888888"
 
 
-FIT_CANONICAL_MAP = {
-    "oversized": "Oversized Fit",
-    "oversized fit": "Oversized Fit",
-    "baggy": "Oversized Fit",
-    "baggy fit": "Oversized Fit",
-    "loose": "Oversized Fit",
-    "regular": "Regular Fit",
-    "regular fit": "Regular Fit",
-    "slim": "Slim Fit",
-    "slim fit": "Slim Fit",
-    "relaxed": "Oversized Fit",
-    "relaxed fit": "Oversized Fit",
-    "boyfriend": "Boyfriend Fit",
-    "boyfriend fit": "Boyfriend Fit",
-}
+# NOTE: FIT_CANONICAL_MAP now lives in src/mapping/taxonomy.py alongside every
+# other taxonomy table (it used to be defined only here, covering just 6 of
+# the catalog's 19 real Fit values). See README changelog.
 
 
 def normalize_category(category_str: Optional[str]) -> Tuple[str, str, List[str]]:
@@ -319,10 +312,17 @@ class IntentCatalogMapper:
         canonical_cat, macro_cat, synonyms = normalize_category(raw_cat)
 
         # Step 3: Normalize gender
-        g = (input_data.gender or "men").lower()
+        raw_gender = input_data.gender
+        if not raw_gender:
+            if re.search(r"\b(women|woman|ladies|girls|female)\b", cleaned_query):
+                raw_gender = "women"
+            elif re.search(r"\b(men|man|guys|boys|male)\b", cleaned_query):
+                raw_gender = "men"
+            else:
+                raw_gender = "all"
+        g = (raw_gender or "all").lower()
         if g not in ("men", "women", "unisex", "all"):
-            g = "men"
-            notes.append("Defaulted gender to 'men'")
+            g = "all"
 
         # Step 4: Normalize color & family
         raw_color = input_data.color
@@ -347,9 +347,21 @@ class IntentCatalogMapper:
             if "oversized" in cleaned_query or "loose" in cleaned_query or "baggy" in cleaned_query:
                 norm_fit = "Oversized Fit"
                 notes.append("Inferred fit: 'Oversized Fit'")
+            elif "skinny" in cleaned_query:
+                norm_fit = "Skinny Fit"
+                notes.append("Inferred fit: 'Skinny Fit'")
             elif "slim" in cleaned_query:
                 norm_fit = "Slim Fit"
                 notes.append("Inferred fit: 'Slim Fit'")
+            elif "wide leg" in cleaned_query:
+                norm_fit = "Wide Leg"
+                notes.append("Inferred fit: 'Wide Leg'")
+            elif "bootcut" in cleaned_query:
+                norm_fit = "Bootcut"
+                notes.append("Inferred fit: 'Bootcut'")
+            elif "straight" in cleaned_query:
+                norm_fit = "Straight Fit"
+                notes.append("Inferred fit: 'Straight Fit'")
 
         norm_design = input_data.design
         if norm_design:
@@ -359,6 +371,19 @@ class IntentCatalogMapper:
                 "typography": "Typography", "quote": "Typography",
                 "washed": "Washed", "acid wash": "Washed",
                 "all over print": "All Over Print", "checked": "Checked",
+                # New: catalog-verified design themes (see README changelog) -
+                # previously fell through to a generic `.title()` call, which
+                # still "worked" but produced values the compilers' handle/
+                # tag lookups (which key off specific lowercased strings)
+                # wouldn't reliably recognize on the way back down.
+                "color block": "Color Block", "colorblock": "Color Block",
+                "striped": "Striped", "stripes": "Striped",
+                "embroidered": "Embroidered", "embroidery": "Embroidered",
+                "self design": "Self Design",
+                "applique": "Applique",
+                "camouflage": "Camouflage", "camo": "Camouflage",
+                "ombre": "Ombre",
+                "tie & dye": "Tie & Dye", "tie dye": "Tie & Dye",
             }
             norm_design = design_map.get(norm_design.lower().strip(), norm_design.title())
         else:
@@ -374,6 +399,55 @@ class IntentCatalogMapper:
             elif "washed" in cleaned_query or "acid" in cleaned_query:
                 norm_design = "Washed"
                 notes.append("Inferred design: 'Washed'")
+            elif "checked" in cleaned_query:
+                norm_design = "Checked"
+                notes.append("Inferred design: 'Checked'")
+            elif "color block" in cleaned_query:
+                norm_design = "Color Block"
+                notes.append("Inferred design: 'Color Block'")
+            elif "striped" in cleaned_query:
+                norm_design = "Striped"
+                notes.append("Inferred design: 'Striped'")
+            elif "embroidered" in cleaned_query:
+                norm_design = "Embroidered"
+                notes.append("Inferred design: 'Embroidered'")
+            elif "camouflage" in cleaned_query:
+                norm_design = "Camouflage"
+                notes.append("Inferred design: 'Camouflage'")
+            elif "tie & dye" in cleaned_query:
+                norm_design = "Tie & Dye"
+                notes.append("Inferred design: 'Tie & Dye'")
+
+        # Step 6b: Normalize sleeve (previously passed straight through with
+        # no canonicalization at all - "full sleeve" from the user and
+        # "Full Sleeve" from the catalog were never guaranteed to line up).
+        norm_sleeve = input_data.sleeve
+        if norm_sleeve:
+            norm_sleeve = SLEEVE_CANONICAL_MAP.get(norm_sleeve.lower().strip(), norm_sleeve.title())
+        else:
+            if "full sleeve" in cleaned_query:
+                norm_sleeve = "Full Sleeve"
+                notes.append("Inferred sleeve: 'Full Sleeve'")
+            elif "half sleeve" in cleaned_query:
+                norm_sleeve = "Half Sleeve"
+                notes.append("Inferred sleeve: 'Half Sleeve'")
+            elif "sleeveless" in cleaned_query:
+                norm_sleeve = "Sleeveless"
+                notes.append("Inferred sleeve: 'Sleeveless'")
+            elif "raglan" in cleaned_query:
+                norm_sleeve = "Raglan Sleeve"
+                notes.append("Inferred sleeve: 'Raglan Sleeve'")
+
+        # Step 6c: Plus-size detection (catalog-verified: 299 products carry
+        # "Plus Size" in-title, ~6.5% of the catalog - previously unmodeled
+        # anywhere in this subsystem; "plus size oversized tee" would silently
+        # drop "plus"/"size" as unrecognized tokens). Honors an explicit
+        # `plus_size` field first, then falls back to free-text detection.
+        norm_plus_size = input_data.plus_size
+        if norm_plus_size is None:
+            if any(kw in cleaned_query for kw in PLUS_SIZE_KEYWORDS):
+                norm_plus_size = True
+                notes.append("Detected 'Plus Size' request from query text")
 
         # Step 7: Fandom detection
         norm_fandom = input_data.fandom
@@ -398,13 +472,14 @@ class IntentCatalogMapper:
         bewakoof_spec = BewakoofCompiler.compile(
             gender=g,
             category=canonical_cat,
-            sleeve=input_data.sleeve,
+            sleeve=norm_sleeve,
             fandom=norm_fandom,
             design=norm_design,
             fit=norm_fit,
         )
 
-        raw_kw_list = [w for w in cleaned_query.split() if w not in NOISE_WORDS]
+        base_cleaned = preprocess_prompt(input_data.query_text, enable_semantic=False)
+        raw_kw_list = [w for w in base_cleaned.split() if w not in NOISE_WORDS]
         shopify_spec = ShopifyCompiler.compile(
             raw_keywords=raw_kw_list,
             category=canonical_cat,
@@ -425,6 +500,7 @@ class IntentCatalogMapper:
             fandom=norm_fandom,
             max_price=input_data.max_price,
             min_rating=input_data.min_rating,
+            plus_size=norm_plus_size,
         )
 
         # Step 10: Build search tiers
@@ -435,6 +511,7 @@ class IntentCatalogMapper:
             design=norm_design,
             sizes=norm_sizes,
             max_price=input_data.max_price,
+            color_family=color_fam,
         )
 
         return ResolvedCatalogIntent(
@@ -449,10 +526,11 @@ class IntentCatalogMapper:
             normalized_sizes=norm_sizes,
             normalized_fit=norm_fit,
             normalized_design=norm_design,
-            normalized_sleeve=input_data.sleeve,
+            normalized_sleeve=norm_sleeve,
             normalized_fabric=input_data.fabric,
             normalized_neck=input_data.neck,
             normalized_fandom=norm_fandom,
+            normalized_plus_size=norm_plus_size,
             vibe_applied=applied_vibe,
             inferred_vibe_tags=inferred_vibe_tags,
             max_price=input_data.max_price,
