@@ -12,7 +12,8 @@ export default function CartDrawer({ onClose, autoStartCascade = false, onResetA
     addToCartLocal, userProfile,
     simulatedOosCount = 0, setSimulatedOosCount,
     simulatedOosRemaining, setSimulatedOosRemaining,
-    simulatePostPaymentOos = false, setSimulatePostPaymentOos
+    simulatePostPaymentOos = false, setSimulatePostPaymentOos,
+    simulatedPostPaymentCount = 0, setSimulatedPostPaymentCount
   } = useApp()
   const { speak, voiceChannels, setVoiceChannel } = useVoice()
   const curr = '₹'
@@ -267,12 +268,12 @@ export default function CartDrawer({ onClose, autoStartCascade = false, onResetA
                 <div style={{
                   display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                   padding: '7px 10px', background: 'rgba(0,0,0,0.3)', borderRadius: 6,
-                  border: simulatePostPaymentOos ? '1px solid rgba(239, 68, 68, 0.4)' : '1px solid rgba(255,255,255,0.08)',
+                  border: simulatedPostPaymentCount > 0 ? '1px solid rgba(239, 68, 68, 0.4)' : '1px solid rgba(255,255,255,0.08)',
                   margin: '6px 0 4px 0'
                 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                     <label style={{ fontSize: '0.74rem', fontWeight: 600, color: '#e2e8f0', display: 'flex', alignItems: 'center', gap: 6, margin: 0 }}>
-                      <ShieldAlert size={13} color={simulatePostPaymentOos ? '#f87171' : '#a5b4fc'} /> Post-Payment Collision:
+                      <ShieldAlert size={13} color={simulatedPostPaymentCount > 0 ? '#f87171' : '#a5b4fc'} /> Post-Payment Collision:
                     </label>
                     <button
                       type="button"
@@ -296,35 +297,44 @@ export default function CartDrawer({ onClose, autoStartCascade = false, onResetA
                       {voiceChannels.postRefund ? <Volume2 size={11} /> : <VolumeX size={11} />}
                     </button>
                   </div>
-                  <button
-                    type="button"
-                    className="btn btn-xs"
-                    style={{
-                      padding: '3px 9px', fontSize: '0.7rem', fontWeight: 700,
-                      background: simulatePostPaymentOos ? '#ef4444' : 'rgba(255,255,255,0.08)',
-                      color: '#fff', border: simulatePostPaymentOos ? '1px solid #dc2626' : '1px solid rgba(255,255,255,0.2)'
-                    }}
-                    onClick={() => {
-                      const next = !simulatePostPaymentOos
-                      setSimulatePostPaymentOos(next)
-                      if (next) {
-                        toast('Post-Payment Collision Active! Payment will succeed, server will report sold out, and agent will issue instant 100% refund.', { icon: '🚨', duration: 4500 })
+                  <select
+                    value={simulatedPostPaymentCount}
+                    onChange={e => {
+                      const num = +e.target.value
+                      setSimulatedPostPaymentCount(num)
+                      if (num > 0) {
+                        toast(`🚨 Post-Payment Collision Active: ${num} item(s) will simulate depletion after capture for instant refund recovery.`, { icon: '🚨', duration: 4500 })
                       } else {
                         toast('Post-Payment Collision disabled. Normal order fulfillment active.', { icon: '✅' })
                       }
                     }}
+                    style={{
+                      background: simulatedPostPaymentCount > 0 ? 'rgba(239, 68, 68, 0.25)' : 'rgba(255,255,255,0.08)',
+                      color: simulatedPostPaymentCount > 0 ? '#fca5a5' : '#cbd5e1',
+                      border: simulatedPostPaymentCount > 0 ? '1px solid #ef4444' : '1px solid rgba(255,255,255,0.2)',
+                      borderRadius: 4,
+                      padding: '3px 8px',
+                      fontSize: '0.74rem',
+                      fontWeight: 700,
+                      cursor: 'pointer'
+                    }}
                   >
-                    {simulatePostPaymentOos ? 'ACTIVE (Simulate Refund)' : 'DISABLED'}
-                  </button>
+                    <option value={0}>0 — Direct Success (0 Collisions)</option>
+                    {Array.from({ length: Math.min(Math.max(cartProducts.length, 1), 4) }, (_, i) => i + 1).map(num => (
+                      <option key={num} value={num}>
+                        {num} — {num} Item{num > 1 ? 's' : ''} Collide ({num} Refund{num > 1 ? 's' : ''})
+                      </option>
+                    ))}
+                  </select>
                 </div>
 
                 <div style={{ fontSize: '0.71rem', color: '#94a3b8', lineHeight: 1.45, margin: '2px 0 10px 0' }}>
-                  {simulatePostPaymentOos ? (
+                  {simulatedPostPaymentCount > 0 ? (
                     <div style={{ color: '#f87171', marginTop: 2 }}>
-                      🚨 <strong>Race Condition Mode:</strong> Payment captures successfully. Then server simulates <em>"Sold out during checkout"</em>. Agent halts fulfillment, issues <strong>100% Instant AP2 Refund</strong> via Razorpay, and presents runner-up re-order.
+                      🚨 <strong>Race Condition Mode:</strong> Payment captures successfully. Then server simulates <em>"{simulatedPostPaymentCount} item(s) sold out during fulfillment"</em>. Agent halts fulfillment, issues <strong>Instant AP2 Refund</strong> via Razorpay, and presents runner-up re-order.
                     </div>
                   ) : (
-                    <span>Toggle ON to test post-payment inventory collision and autonomous instant refund recovery.</span>
+                    <span>Select 1–{Math.max(cartProducts.length, 1)} to test post-payment inventory collision and autonomous instant refund recovery.</span>
                   )}
                 </div>
 
@@ -397,28 +407,30 @@ export default function CartDrawer({ onClose, autoStartCascade = false, onResetA
                     type="button"
                     className="btn btn-sm btn-full"
                     style={{
-                      background: (effectiveOosCount > 0 || simulatePostPaymentOos)
+                      background: (effectiveOosCount > 0 || simulatedPostPaymentCount > 0)
                         ? 'linear-gradient(135deg, rgba(99, 102, 241, 0.35), rgba(245, 158, 11, 0.35))' 
                         : 'rgba(99, 102, 241, 0.15)',
-                      color: (effectiveOosCount > 0 || simulatePostPaymentOos) ? '#fde68a' : '#a5b4fc',
-                      border: (effectiveOosCount > 0 || simulatePostPaymentOos) ? '1px solid #f59e0b' : '1px solid rgba(99,102,241,0.3)',
+                      color: (effectiveOosCount > 0 || simulatedPostPaymentCount > 0) ? '#fde68a' : '#a5b4fc',
+                      border: (effectiveOosCount > 0 || simulatedPostPaymentCount > 0) ? '1px solid #f59e0b' : '1px solid rgba(99,102,241,0.3)',
                       padding: '7px 10px', fontSize: '0.74rem', fontWeight: 700,
                       display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6
                     }}
                     onClick={() => {
-                      if (effectiveOosCount === 0 && !simulatePostPaymentOos) {
+                      if (effectiveOosCount === 0 && simulatedPostPaymentCount === 0) {
                         handleSubstituteItem(cartProducts[0], activeCandidateBuffer[0])
                       } else {
                         setSimulatedOosRemaining(effectiveOosCount)
                         updateConfig({ demoMode: 'cascade_failover' })
-                        window.dispatchEvent(new CustomEvent('rasor:start-oos-cascade', { detail: { count: effectiveOosCount } }))
+                        window.dispatchEvent(new CustomEvent('rasor:start-oos-cascade', { 
+                          detail: { count: effectiveOosCount, postCount: simulatedPostPaymentCount } 
+                        }))
                       }
                     }}
                   >
                     {effectiveOosCount > 0 ? (
-                      <>⚡ Run Pre-Check Cascade ({effectiveOosCount}x) {simulatePostPaymentOos ? '+ Post-Refund' : '→ Demo 3'}</>
-                    ) : simulatePostPaymentOos ? (
-                      <>⚡ Run Checkout + Post-Payment Collision Refund</>
+                      <>⚡ Run Pre-Check Cascade ({effectiveOosCount}x) {simulatedPostPaymentCount > 0 ? `+ Post-Refund (${simulatedPostPaymentCount}x)` : '→ Demo 3'}</>
+                    ) : simulatedPostPaymentCount > 0 ? (
+                      <>⚡ Run Checkout + Post-Payment Collision ({simulatedPostPaymentCount}x Refund)</>
                     ) : (
                       <><RefreshCw size={11} /> Test Instant Single Swap</>
                     )}

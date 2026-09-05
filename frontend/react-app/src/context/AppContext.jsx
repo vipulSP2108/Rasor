@@ -705,16 +705,29 @@ const DEFAULT_CANDIDATE_BUFFER = [
   }, [])
 
   // Simulated Post-Payment OOS Race Condition Collision & Instant Refund
+  const [simulatedPostPaymentCount, setSimulatedPostPaymentCountState] = useState(() => {
+    const saved = loadSessionJson('rasor_simulate_post_payment_count', null)
+    if (typeof saved === 'number') return saved
+    const legacyBool = loadSessionJson('rasor_simulate_post_payment_oos', false)
+    return legacyBool ? 1 : 0
+  })
   const [simulatePostPaymentOos, setSimulatePostPaymentOosState] = useState(() =>
-    loadSessionJson('rasor_simulate_post_payment_oos', false)
+    simulatedPostPaymentCount > 0
   )
   const [postPaymentRefundData, setPostPaymentRefundData] = useState(null)
 
-  const setSimulatePostPaymentOos = useCallback((val) => {
-    const bool = !!val
-    setSimulatePostPaymentOosState(bool)
-    saveSessionJson('rasor_simulate_post_payment_oos', bool)
+  const setSimulatedPostPaymentCount = useCallback((count) => {
+    const num = Math.max(0, parseInt(count, 10) || 0)
+    setSimulatedPostPaymentCountState(num)
+    setSimulatePostPaymentOosState(num > 0)
+    saveSessionJson('rasor_simulate_post_payment_count', num)
+    saveSessionJson('rasor_simulate_post_payment_oos', num > 0)
   }, [])
+
+  const setSimulatePostPaymentOos = useCallback((val) => {
+    const count = typeof val === 'number' ? val : (val ? 1 : 0)
+    setSimulatedPostPaymentCount(count)
+  }, [setSimulatedPostPaymentCount])
 
   const setSearchState = useCallback((patch) => {
     setSearchStateInternal(prev => {
@@ -769,6 +782,10 @@ const DEFAULT_CANDIDATE_BUFFER = [
       sessionStorage.removeItem('rasor_studio_viewport')
       sessionStorage.removeItem('rasor_studio_stage_bundle')
       sessionStorage.removeItem('rasor_studio_expanded')
+      sessionStorage.removeItem('rasor_simulate_post_payment_count')
+      sessionStorage.removeItem('rasor_simulate_post_payment_oos')
+      setSimulatedPostPaymentCountState(0)
+      setSimulatePostPaymentOosState(false)
       localStorage.removeItem('rasor_persistent_history')
       localStorage.removeItem('rasor_compare_ids')
       localStorage.removeItem('rasor_active_plink')
@@ -1010,6 +1027,7 @@ const DEFAULT_CANDIDATE_BUFFER = [
       simulatedOosCount, setSimulatedOosCount,
       simulatedOosRemaining, setSimulatedOosRemaining,
       simulatePostPaymentOos, setSimulatePostPaymentOos,
+      simulatedPostPaymentCount, setSimulatedPostPaymentCount,
       postPaymentRefundData, setPostPaymentRefundData,
       clearStorageCaches,
       studioMessages, setStudioMessages,

@@ -3501,16 +3501,20 @@ def post_payment_refund(req: PostPaymentRefundRequest):
         raise HTTPException(status_code=503, detail="CheckoutAgent not available")
     agent = CheckoutAgent()
     refund_id = None
-    # Attempt real refund via Razorpay client if payment_id starts with pay_
-    if agent.client and req.payment_id and req.payment_id.startswith("pay_"):
+    # Attempt real refund via Razorpay client if payment_id starts with pay_ and is not a simulation
+    if agent.client and req.payment_id and req.payment_id.startswith("pay_") and not req.payment_id.startswith("pay_sim_") and not req.payment_id.startswith("pay_test_"):
         try:
-            rfnd = agent.client.payment.refund(req.payment_id, {
+            refund_amount_paise = int(round(req.amount * 100)) if req.amount else None
+            refund_payload = {
                 "notes": {
                     "reason": req.reason,
                     "item": req.item_title or "Fashion item",
                     "order_id": req.order_id or ""
                 }
-            })
+            }
+            if refund_amount_paise and refund_amount_paise > 0:
+                refund_payload["amount"] = refund_amount_paise
+            rfnd = agent.client.payment.refund(req.payment_id, refund_payload)
             refund_id = rfnd.get("id")
         except Exception as e:
             print(f"[post_payment_refund] Real Razorpay refund note: {e}")
@@ -3521,10 +3525,9 @@ def post_payment_refund(req: PostPaymentRefundRequest):
     # Record event in AP2 Audit Ledger
     try:
         ledger = AuditLedger()
-        ledger.record_event(
+        ledger.log_event(
             event_type="autonomous_post_payment_refund",
-            actor="agent",
-            data={
+            details={
                 "payment_id": req.payment_id,
                 "order_id": req.order_id,
                 "amount": req.amount,

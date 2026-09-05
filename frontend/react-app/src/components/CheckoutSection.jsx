@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { 
   CreditCard, Bot, Zap, ShieldAlert, Key, 
   AlertTriangle, ArrowRight, X, Sliders,
@@ -61,7 +61,9 @@ export default function CheckoutSection({
     simulatedOosRemaining = 0,
     setSimulatedOosRemaining,
     simulatePostPaymentOos = false,
-    setSimulatePostPaymentOos
+    setSimulatePostPaymentOos,
+    simulatedPostPaymentCount = 0,
+    setSimulatedPostPaymentCount
   } = useApp()
   
   const { speak, speakAsync, voiceChannels, setVoiceChannel } = useVoice()
@@ -72,6 +74,46 @@ export default function CheckoutSection({
   const [postPaymentModal, setPostPaymentModal] = useState(null)
   const isOosSwappingRef = useRef(false)
   const curr = currency === 'INR' ? '₹' : '$'
+
+  const getCartProducts = useCallback((sourceCart = cart) => {
+    return Object.entries(sourceCart?.items || {}).map(([id, qty]) => ({
+      ...sourceCart?.products?.[id],
+      qty,
+    })).filter(p => p.id)
+  }, [cart])
+
+  const activeCartProductsRef = useRef(getCartProducts(cart))
+
+  useEffect(() => {
+    if (!isOosSwappingRef.current) {
+      activeCartProductsRef.current = getCartProducts(cart)
+    }
+  }, [cart, getCartProducts])
+
+  const postPaymentRemainingRef = useRef(
+    simulatedPostPaymentCount > 0 ? simulatedPostPaymentCount : (simulatePostPaymentOos ? 1 : 0)
+  )
+
+  useEffect(() => {
+    if (!postPaymentModal) {
+      postPaymentRemainingRef.current = simulatedPostPaymentCount > 0 ? simulatedPostPaymentCount : (simulatePostPaymentOos ? 1 : 0)
+    }
+  }, [simulatedPostPaymentCount, simulatePostPaymentOos, postPaymentModal])
+
+  const consumePostPaymentCollision = useCallback(() => {
+    const count = postPaymentRemainingRef.current
+    if (count > 0) {
+      postPaymentRemainingRef.current = 0
+      setSimulatedPostPaymentCount(0)
+      setSimulatePostPaymentOos(false)
+      try {
+        sessionStorage.setItem('rasor_simulate_post_payment_count', '0')
+        sessionStorage.setItem('rasor_simulate_post_payment_oos', 'false')
+      } catch (e) {}
+      return count
+    }
+    return 0
+  }, [setSimulatedPostPaymentCount, setSimulatePostPaymentOos])
 
   const effectiveEmail = customerEmail || config.customerEmail || userProfile?.email || 'vipulapatil21@gmail.com'
   const effectiveLimit = Number(tokenMaxLimit || 0)
@@ -143,6 +185,10 @@ export default function CheckoutSection({
     setPendingRail(null)
     setActiveOrderId(null)
     failedTierRef.current = null
+    activeCartProductsRef.current = getCartProducts(cart)
+    postPaymentRemainingRef.current = 0
+    setSimulatePostPaymentOos(false)
+    setSimulatedPostPaymentCount(0)
 
     // 2. Reset Rescue Module State
     setPollingActive(false)
@@ -295,11 +341,38 @@ export default function CheckoutSection({
             toast.success('🎉 Mobile Payment Verified & Paid! Syncing to Shopify...', { duration: 6000 })
             speak('Mobile payment received successfully. Synchronizing order to Shopify.')
             
+            const activeProducts = (activeCartProductsRef.current && activeCartProductsRef.current.length > 0)
+              ? activeCartProductsRef.current
+              : getCartProducts(cart)
+
+            const collisionCount = consumePostPaymentCollision()
+            if (collisionCount > 0) {
+              setPollingActive(false)
+              clearInterval(interval)
+              localStorage.removeItem('rasor_active_plink')
+              toast.dismiss('verify')
+              await handlePostPaymentCollision(mobileRescueData.plink_id, mobileRescueData.plink_id, 'Tier 4 (Mobile Rescue Link)', collisionCount, activeProducts)
+              return
+            }
+
+            const finalPayload = activeProducts.length > 0
+              ? activeProducts.map(p => ({
+                  product_id: p.id,
+                  title: p.title,
+                  merchant: p.merchant || 'Rasor',
+                  unit_price: p.price,
+                  quantity: p.qty || 1
+                }))
+              : cartItemsPayload
+            const finalTotal = activeProducts.length > 0
+              ? activeProducts.reduce((sum, p) => sum + p.price * (p.qty || 1), 0)
+              : rawTotal
+
             // Sync to Shopify
             await syncShopify({
-              cart_items: cartItemsPayload,
+              cart_items: finalPayload,
               currency,
-              final_total: rawTotal,
+              final_total: finalTotal,
               order_id: mobileRescueData.plink_id,
               email: effectiveEmail,
             })
@@ -365,15 +438,34 @@ export default function CheckoutSection({
               toast.error('Payment verification failed!', { id: 'verify' })
               return
             }
-            if (simulatePostPaymentOos) {
-              await handlePostPaymentCollision(response.razorpay_payment_id, data.order_id, 'Standard Checkout')
+            const activeProducts = (activeCartProductsRef.current && activeCartProductsRef.current.length > 0)
+              ? activeCartProductsRef.current
+              : getCartProducts(cart)
+
+            const collisionCount = consumePostPaymentCollision()
+            if (collisionCount > 0) {
+              await handlePostPaymentCollision(response.razorpay_payment_id, data.order_id, 'Standard Checkout', collisionCount, activeProducts)
               return
             }
+
+            const finalPayload = activeProducts.length > 0
+              ? activeProducts.map(p => ({
+                  product_id: p.id,
+                  title: p.title,
+                  merchant: p.merchant || 'Rasor',
+                  unit_price: p.price,
+                  quantity: p.qty || 1
+                }))
+              : cartItemsPayload
+            const finalTotal = activeProducts.length > 0
+              ? activeProducts.reduce((sum, p) => sum + p.price * (p.qty || 1), 0)
+              : rawTotal
+
             // Sync to Shopify
             const { data: syncData } = await syncShopify({
-              cart_items: cartItemsPayload,
+              cart_items: finalPayload,
               currency,
-              final_total: rawTotal,
+              final_total: finalTotal,
               order_id: data.order_id,
               email: effectiveEmail,
             })
@@ -449,10 +541,34 @@ export default function CheckoutSection({
             const capturedToken = response.razorpay_token_id || `tok_${Math.random().toString(36).slice(2, 10)}`
             saveMandateToken(capturedToken, cid, rawTotal, effectiveEmail)
 
+            const activeProducts = (activeCartProductsRef.current && activeCartProductsRef.current.length > 0)
+              ? activeCartProductsRef.current
+              : getCartProducts(cart)
+
+            const collisionCount = consumePostPaymentCollision()
+            if (collisionCount > 0) {
+              toast.dismiss('mandate-verify')
+              await handlePostPaymentCollision(response.razorpay_payment_id, orderId, 'Demo 1 (Mandate Setup)', collisionCount, activeProducts)
+              return
+            }
+
+            const finalPayload = activeProducts.length > 0
+              ? activeProducts.map(p => ({
+                  product_id: p.id,
+                  title: p.title,
+                  merchant: p.merchant || 'Rasor',
+                  unit_price: p.price,
+                  quantity: p.qty || 1
+                }))
+              : cartItemsPayload
+            const finalTotal = activeProducts.length > 0
+              ? activeProducts.reduce((sum, p) => sum + p.price * (p.qty || 1), 0)
+              : rawTotal
+
             const { data: syncData } = await syncShopify({
-              cart_items: cartItemsPayload,
+              cart_items: finalPayload,
               currency,
-              final_total: rawTotal,
+              final_total: finalTotal,
               order_id: orderId,
               email: effectiveEmail,
             })
@@ -544,10 +660,33 @@ export default function CheckoutSection({
 
       if (!data.success) { toast.error('S2S capture failed: ' + data.error); return }
 
+      const activeProducts = (activeCartProductsRef.current && activeCartProductsRef.current.length > 0)
+        ? activeCartProductsRef.current
+        : getCartProducts(cart)
+
+      const collisionCount = consumePostPaymentCollision()
+      if (collisionCount > 0) {
+        await handlePostPaymentCollision(data.payment_id, `order_s2s_${Date.now()}`, 'Demo 2 (Autonomous S2S)', collisionCount, activeProducts)
+        return
+      }
+
+      const finalPayload = activeProducts.length > 0
+        ? activeProducts.map(p => ({
+            product_id: p.id,
+            title: p.title,
+            merchant: p.merchant || 'Rasor',
+            unit_price: p.price,
+            quantity: p.qty || 1
+          }))
+        : cartItemsPayload
+      const finalTotal = activeProducts.length > 0
+        ? activeProducts.reduce((sum, p) => sum + p.price * (p.qty || 1), 0)
+        : rawTotal
+
       const { data: syncData } = await syncShopify({
-        cart_items: cartItemsPayload,
+        cart_items: finalPayload,
         currency,
-        final_total: rawTotal,
+        final_total: finalTotal,
         order_id: data.payment_id,
         email: effectiveEmail,
       })
@@ -571,11 +710,29 @@ export default function CheckoutSection({
     if (activeOrderId && activeKeyId && activeAmountPaise) {
       return { orderId: activeOrderId, keyId: activeKeyId, amountPaise: activeAmountPaise }
     }
+    const activeProducts = (activeCartProductsRef.current && activeCartProductsRef.current.length > 0)
+      ? activeCartProductsRef.current
+      : getCartProducts(cart)
+
+    const itemsPayload = activeProducts.length > 0
+      ? activeProducts.map(p => ({
+          product_id: p.id,
+          title: p.title,
+          merchant: p.merchant || 'Rasor',
+          unit_price: p.price,
+          quantity: p.qty || 1
+        }))
+      : cartItemsPayload
+
+    const totalAmount = activeProducts.length > 0
+      ? activeProducts.reduce((sum, p) => sum + p.price * (p.qty || 1), 0)
+      : rawTotal
+
     const cid = cart?.cartId || cart?.shopifyCartId || `cart_cascade_${Date.now()}`
     const { data } = await createOrder({
-      cart_items: cartItemsPayload,
+      cart_items: itemsPayload,
       currency,
-      final_total: rawTotal,
+      final_total: totalAmount,
       cart_id: cid,
       customer_id: razorpayCustomerId,
       max_authorized_cap: autonomousCap
@@ -592,18 +749,18 @@ export default function CheckoutSection({
 
   // ── Pre-Fetched Runner-Up Buffer OOS Interception & Cascading ──────────
   const runOosSimulationStep = async (remainingCount) => {
-    if (isOosSwappingRef.current) return
+    if (isOosSwappingRef.current && remainingCount === undefined) return
     isOosSwappingRef.current = true
     setLoading(true)
 
-    // Current primary item in cart
-    const currentItems = Object.entries(cart?.items || {}).map(([id, qty]) => ({
-      ...cart?.products?.[id],
-      qty,
-    })).filter(p => p.id)
+    // Current primary item in cart from our active reference
+    const currentItems = (activeCartProductsRef.current && activeCartProductsRef.current.length > 0)
+      ? [...activeCartProductsRef.current]
+      : getCartProducts(cart)
 
     const currentItem = currentItems[0]
-    const availableCandidates = (candidateBuffer || []).filter(cand => !cart?.items?.[cand.id])
+    const currentItemIds = new Set(currentItems.map(p => p.id))
+    const availableCandidates = (candidateBuffer || []).filter(cand => !currentItemIds.has(cand.id))
     const nextCandidate = availableCandidates[0]
 
     if (!currentItem || !nextCandidate) {
@@ -644,6 +801,9 @@ export default function CheckoutSection({
     await new Promise(r => setTimeout(r, 300))
 
     // Step 3: Perform zero-latency buffer substitution
+    const updatedProducts = currentItems.map(p => p.id === currentItem.id ? { ...nextCandidate, qty: 1 } : p)
+    activeCartProductsRef.current = updatedProducts
+
     removeFromCart(currentItem.id)
     addToCartLocal(nextCandidate, 1)
 
@@ -671,13 +831,14 @@ export default function CheckoutSection({
 
     // Step 4: Pause 400ms after speech ends
     await new Promise(r => setTimeout(r, 400))
-    isOosSwappingRef.current = false
 
     if (nextRemaining > 0) {
       // Loop into next fallback
       await speakAsync(`Re-evaluating inventory for fallback number ${currentStep + 1}.`, { category: 'inventoryOos' })
       runOosSimulationStep(nextRemaining)
     } else {
+      isOosSwappingRef.current = false
+
       // All OOS iterations complete!
       setOosBanner({
         active: true,
@@ -697,7 +858,51 @@ export default function CheckoutSection({
 
       await new Promise(r => setTimeout(r, 400))
       setOosBanner(null)
-      runTier1()
+
+      // Directly compute fresh payload from activeCartProductsRef.current so order creation matches the substituted item immediately
+      const freshProducts = activeCartProductsRef.current
+      const freshPayload = freshProducts.map(p => ({
+        product_id: p.id,
+        title: p.title,
+        merchant: p.merchant || 'Rasor',
+        unit_price: p.price,
+        quantity: p.qty || 1
+      }))
+      const freshTotal = freshProducts.reduce((sum, p) => sum + p.price * (p.qty || 1), 0)
+
+      const cid = `cart_cascade_${Date.now()}`
+      try {
+        const { data: ord } = await createOrder({
+          cart_items: freshPayload,
+          currency,
+          final_total: freshTotal,
+          cart_id: cid,
+          customer_id: razorpayCustomerId,
+          max_authorized_cap: autonomousCap
+        })
+        if (ord?.success) {
+          setActiveOrderId(ord.order_id)
+          setActiveKeyId(ord.key_id)
+          setActiveAmountPaise(ord.amount)
+          runTier1({
+            orderId: ord.order_id,
+            keyId: ord.key_id,
+            amountPaise: ord.amount,
+            total: freshTotal,
+            cartItems: freshPayload,
+            activeProducts: freshProducts
+          })
+          return
+        }
+      } catch (err) {
+        console.warn('Fresh order creation note:', err)
+      }
+
+      runTier1({
+        activeProducts: freshProducts,
+        total: freshTotal,
+        cartItems: freshPayload
+      })
     }
   }
 
@@ -705,6 +910,13 @@ export default function CheckoutSection({
   useEffect(() => {
     const handleOosCascadeEvent = (e) => {
       const count = typeof e.detail?.count === 'number' ? e.detail.count : (simulatedOosCount || 0)
+      const postCount = typeof e.detail?.postCount === 'number'
+        ? e.detail.postCount
+        : (simulatedPostPaymentCount > 0 ? simulatedPostPaymentCount : (simulatePostPaymentOos ? 1 : 0))
+
+      postPaymentRemainingRef.current = postCount
+      setSimulatedPostPaymentCount(postCount)
+      setSimulatePostPaymentOos(postCount > 0)
       if (count > 0) {
         setSimulatedOosRemaining(count)
         runOosSimulationStep(count)
@@ -714,13 +926,16 @@ export default function CheckoutSection({
     }
     window.addEventListener('rasor:start-oos-cascade', handleOosCascadeEvent)
     return () => window.removeEventListener('rasor:start-oos-cascade', handleOosCascadeEvent)
-  }, [simulatedOosCount, cart, candidateBuffer])
+  }, [simulatedOosCount, cart, candidateBuffer, setSimulatedPostPaymentCount, setSimulatePostPaymentOos])
 
   const handleStartCascade = async () => {
     // If simulated OOS failures are configured, intercept and run the OOS failover cascade first!
     const targetOos = simulatedOosRemaining > 0 ? simulatedOosRemaining : (simulatedOosCount > 0 ? simulatedOosCount : 0)
-    const currentItems = Object.entries(cart?.items || {}).map(([id, qty]) => ({ ...cart?.products?.[id], qty })).filter(p => p.id)
-    const availableCandidates = (candidateBuffer || []).filter(cand => !cart?.items?.[cand.id])
+    const currentItems = (activeCartProductsRef.current && activeCartProductsRef.current.length > 0)
+      ? activeCartProductsRef.current
+      : getCartProducts(cart)
+    const currentIds = new Set(currentItems.map(p => p.id))
+    const availableCandidates = (candidateBuffer || []).filter(cand => !currentIds.has(cand.id))
 
     if (targetOos > 0 && currentItems.length > 0 && availableCandidates.length > 0) {
       runOosSimulationStep(targetOos)
@@ -735,6 +950,8 @@ export default function CheckoutSection({
       const loaded = await loadRazorpayScript()
       if (!loaded) { toast.error('Could not load Razorpay'); return }
       const { orderId, keyId, amountPaise } = overrideParams || await ensureOrderParams()
+      const activeProducts = overrideParams?.activeProducts || (activeCartProductsRef.current && activeCartProductsRef.current.length > 0 ? activeCartProductsRef.current : getCartProducts(cart))
+      const displayTotal = overrideParams?.total || activeProducts.reduce((sum, p) => sum + p.price * (p.qty || 1), 0) || rawTotal
 
       setCascadeStep(1)
       setCascadeStatuses(s => ({ ...s, tier1: 'attempting' }))
@@ -751,7 +968,7 @@ export default function CheckoutSection({
         amount: amountPaise,
         currency,
         name: 'Rasor Autonomous Commerce',
-        description: `Tier 1: ${bankName} (${curr}${rawTotal.toFixed(0)})`,
+        description: `Tier 1: ${bankName} (${curr}${displayTotal.toFixed(0)})`,
         order_id: orderId,
         retry: { enabled: false },
         prefill: {
@@ -766,7 +983,7 @@ export default function CheckoutSection({
           failedTierRef.current = null
           setCascadeStatuses(s => ({ ...s, tier1: 'success' }))
           setPendingRail(null)
-          handleCascadeSuccess(resp.razorpay_payment_id, orderId, `Tier 1 (${bankName})`)
+          handleCascadeSuccess(resp.razorpay_payment_id, orderId, `Tier 1 (${bankName})`, activeProducts)
         },
         modal: { 
           backdropclose: true,
@@ -779,7 +996,7 @@ export default function CheckoutSection({
             toast('Tier 1 Canara Bank declined. Auto-advancing to Tier 2 (Bank of Baroda)...', { icon: '🔄' })
             speak('Canara Bank declined. Automatically failing over to Tier 2, Bank of Baroda.')
             setTimeout(() => {
-              runTier2()
+              runTier2(activeProducts)
             }, 400)
           } 
         }
@@ -814,12 +1031,17 @@ export default function CheckoutSection({
     }
   }
 
-  const runTier2 = async () => {
+  const runTier2 = async (passedProducts = null) => {
     setLoading(true)
     try {
       const loaded = await loadRazorpayScript()
       if (!loaded) { toast.error('Could not load Razorpay'); return }
       const { orderId, keyId, amountPaise } = await ensureOrderParams()
+      const activeProducts = (passedProducts && passedProducts.length > 0)
+        ? passedProducts
+        : (activeCartProductsRef.current && activeCartProductsRef.current.length > 0)
+          ? activeCartProductsRef.current
+          : getCartProducts(cart)
 
       setCascadeStep(2)
       setCascadeStatuses(s => ({ ...s, tier2: 'attempting' }))
@@ -851,7 +1073,7 @@ export default function CheckoutSection({
           failedTierRef.current = null
           setCascadeStatuses(s => ({ ...s, tier2: 'success' }))
           setPendingRail(null)
-          handleCascadeSuccess(resp.razorpay_payment_id, orderId, `Tier 2 (${bankName})`)
+          handleCascadeSuccess(resp.razorpay_payment_id, orderId, `Tier 2 (${bankName})`, activeProducts)
         },
         modal: { 
           backdropclose: true,
@@ -864,7 +1086,7 @@ export default function CheckoutSection({
             toast('Tier 2 Bank of Baroda declined. Auto-advancing to Tier 3 (Verified Card)...', { icon: '💳' })
             speak('Bank of Baroda also declined. Automatically failing over to Tier 3, Verified Fallback Card.')
             setTimeout(() => {
-              runTier3()
+              runTier3(activeProducts)
             }, 400)
           } 
         }
@@ -899,12 +1121,17 @@ export default function CheckoutSection({
     }
   }
 
-  const runTier3 = async () => {
+  const runTier3 = async (passedProducts = null) => {
     setLoading(true)
     try {
       const loaded = await loadRazorpayScript()
       if (!loaded) { toast.error('Could not load Razorpay'); return }
       const { orderId, keyId, amountPaise } = await ensureOrderParams()
+      const activeProducts = (passedProducts && passedProducts.length > 0)
+        ? passedProducts
+        : (activeCartProductsRef.current && activeCartProductsRef.current.length > 0)
+          ? activeCartProductsRef.current
+          : getCartProducts(cart)
 
       setCascadeStep(3)
       setCascadeStatuses(s => ({ ...s, tier3: 'attempting' }))
@@ -933,7 +1160,7 @@ export default function CheckoutSection({
           failedTierRef.current = null
           setCascadeStatuses(s => ({ ...s, tier3: 'success' }))
           setPendingRail(null)
-          handleCascadeSuccess(resp.razorpay_payment_id, orderId, 'Tier 3 (Verified Card)')
+          handleCascadeSuccess(resp.razorpay_payment_id, orderId, 'Tier 3 (Verified Card)', activeProducts)
         },
         modal: { 
           backdropclose: true,
@@ -976,7 +1203,7 @@ export default function CheckoutSection({
             } catch (e) {}
             setTimeout(() => {
               const fullFailoverSummary = `${userProfile?.primaryBankLabel || 'Canara Bank'}, ${userProfile?.secondaryBankLabel || 'Bank of Baroda'}, Verified Card (•••• ${userProfile?.fallbackCard?.last4 || '1114'})`
-              handleTriggerMobileRescue(fullFailoverSummary, true)
+              handleTriggerMobileRescue(fullFailoverSummary, true, activeProducts)
             }, 400)
           } 
         }
@@ -1035,29 +1262,48 @@ export default function CheckoutSection({
   }, [autoStartCascade])
 
   // ── Post-Payment Inventory Collision & Autonomous Refund Recovery ───
-  const handlePostPaymentCollision = async (paymentId, orderId, railName = 'Payment Rail') => {
+  const handlePostPaymentCollision = async (paymentId, orderId, railName = 'Payment Rail', count = null, liveProducts = null) => {
     toast.dismiss('cascade-verify')
     toast.dismiss('mandate-verify')
     toast.dismiss('verify')
 
-    const currentProducts = Object.entries(cart?.items || {}).map(([id, qty]) => ({ ...cart?.products?.[id], qty })).filter(p => p.id)
-    const primaryItem = currentProducts[0]
-    const availableCandidates = (candidateBuffer || []).filter(cand => !cart?.items?.[cand.id])
-    const nextRunnerUp = availableCandidates[0]
+    const currentProducts = (liveProducts && liveProducts.length > 0)
+      ? liveProducts
+      : (activeCartProductsRef.current && activeCartProductsRef.current.length > 0)
+        ? activeCartProductsRef.current
+        : getCartProducts(cart)
 
-    toast.loading('Simulating merchant inventory lock & fulfillment…', { id: 'post-verify' })
-    await new Promise(r => setTimeout(r, 1000))
+    if (currentProducts.length === 0) {
+      toast.error('Cart is empty, cannot simulate post-payment collision')
+      return
+    }
+
+    const requestedCount = typeof count === 'number' && count > 0 ? count : (simulatedPostPaymentCount > 0 ? simulatedPostPaymentCount : 1)
+    const numColliding = Math.min(requestedCount, currentProducts.length)
+
+    const collidingItems = currentProducts.slice(0, numColliding)
+    const collidingTotal = collidingItems.reduce((sum, item) => sum + (item.price * (item.qty || 1)), 0)
+    const collidingTitles = collidingItems.map(item => item.title).join(', ')
+
+    // Extract available runner-ups from candidateBuffer that are NOT in currentProducts
+    const activeIds = new Set(currentProducts.map(p => p.id))
+    const availableCandidates = (candidateBuffer || []).filter(cand => !activeIds.has(cand.id))
+    const matchingRunnerUps = availableCandidates.slice(0, numColliding)
+    const primaryRunnerUp = matchingRunnerUps[0] || (candidateBuffer && candidateBuffer.find(c => !activeIds.has(c.id))) || (candidateBuffer && candidateBuffer[0])
+
+    toast.loading(`Simulating merchant inventory lock & fulfillment for ${numColliding} item(s)…`, { id: 'post-verify' })
+    await new Promise(r => setTimeout(r, 800))
 
     let refundId = null
     try {
       const { data: rfData } = await postPaymentRefund({
         payment_id: paymentId,
         order_id: orderId,
-        amount: rawTotal,
+        amount: collidingTotal,
         currency,
-        item_title: primaryItem?.title || 'Fashion item',
+        item_title: collidingTitles,
         customer_email: effectiveEmail,
-        reason: `Post-payment inventory depletion: "${primaryItem?.title || 'Item'}" claimed during checkout confirmation`
+        reason: `Post-payment inventory depletion: "${collidingTitles}" claimed during checkout confirmation`
       })
       refundId = rfData.refund_id
     } catch (rfErr) {
@@ -1065,24 +1311,39 @@ export default function CheckoutSection({
     }
 
     toast.dismiss('post-verify')
-    toast.error(`🚨 POST-PAYMENT COLLISION: "${primaryItem?.title?.slice(0, 20)}..." sold out during confirmation! Autonomous 100% refund issued.`, { id: 'post-refund-alert', duration: 8000 })
+    const activeTotal = currentProducts.reduce((sum, item) => sum + (item.price * (item.qty || 1)), 0)
+    const isFullRefund = collidingTotal >= activeTotal
+    toast.error(`🚨 POST-PAYMENT COLLISION: "${collidingItems[0]?.title?.slice(0, 20)}..." ${numColliding > 1 ? `(+${numColliding - 1} more) ` : ''}sold out during confirmation! Autonomous ${isFullRefund ? '100%' : curr + collidingTotal.toFixed(0)} refund issued.`, { id: 'post-refund-alert', duration: 8000 })
 
-    await speakAsync(`Post-payment collision alert: ${primaryItem?.title || 'The item'} was depleted during checkout confirmation. The autonomous agent has automatically triggered an instant 100 percent refund of ${curr}${rawTotal.toFixed(0)} via Razorpay.`, { category: 'postRefund' })
+    await speakAsync(`Post-payment collision alert: ${numColliding > 1 ? numColliding + ' items were' : collidingItems[0]?.title + ' was'} depleted during checkout confirmation. The autonomous agent has automatically triggered an instant refund of ${curr}${collidingTotal.toFixed(0)} via Razorpay.`, { category: 'postRefund' })
 
     setPostPaymentModal({
       paymentId,
       orderId,
       railName,
       refundId,
-      amount: rawTotal,
-      outOfStockTitle: primaryItem?.title || 'Selected Item',
-      outOfStockImg: primaryItem?.specs?.display_image || primaryItem?.specs?.image_url,
-      runnerUp: nextRunnerUp
+      amount: collidingTotal,
+      total: activeTotal,
+      numColliding,
+      collidingItems,
+      outOfStockTitle: collidingTitles,
+      outOfStockImg: collidingItems[0]?.specs?.display_image || collidingItems[0]?.specs?.image_url,
+      runnerUps: matchingRunnerUps,
+      runnerUp: primaryRunnerUp
     })
+
+    postPaymentRemainingRef.current = 0
+    setSimulatedPostPaymentCount(0)
+    setSimulatePostPaymentOos(false)
+    try {
+      sessionStorage.setItem('rasor_simulate_post_payment_count', '0')
+      sessionStorage.setItem('rasor_simulate_post_payment_oos', 'false')
+    } catch (e) {}
 
     setIsRescueModuleActive(false)
     try {
       localStorage.removeItem('rasor_cascade_state')
+      localStorage.setItem('rasor_rescue_module_active', 'false')
     } catch (e) {}
   }
 
@@ -1096,18 +1357,29 @@ export default function CheckoutSection({
     toast.dismiss('mandate-verify')
     toast.dismiss('verify')
 
-    // 2. Reset cascade states
+    // 2. Reset cascade states and ensure post-payment collision is disarmed for the reorder
     setPostPaymentModal(null)
+    postPaymentRemainingRef.current = 0
     setSimulatePostPaymentOos(false)
+    setSimulatedPostPaymentCount(0)
+    try {
+      sessionStorage.setItem('rasor_simulate_post_payment_count', '0')
+      sessionStorage.setItem('rasor_simulate_post_payment_oos', 'false')
+    } catch (e) {}
     setPendingRail(null)
     setCascadeStep(0)
     setCascadeStatuses({ tier1: 'idle', tier2: 'idle', tier3: 'idle' })
 
     // 3. Swap the cart items
-    const currentProducts = Object.entries(cart?.items || {}).map(([id, qty]) => ({ ...cart?.products?.[id], qty })).filter(p => p.id)
+    const currentProducts = (activeCartProductsRef.current && activeCartProductsRef.current.length > 0)
+      ? activeCartProductsRef.current
+      : getCartProducts(cart)
     const oldItem = currentProducts[0]
     if (oldItem) removeFromCart(oldItem.id)
     addToCartLocal(runnerUp, 1)
+
+    const updated = [{ ...runnerUp, qty: 1 }]
+    activeCartProductsRef.current = updated
 
     const reorderPayload = [{
       product_id: runnerUp.id,
@@ -1146,14 +1418,21 @@ export default function CheckoutSection({
       toast.success(`Fresh order created! Launching Tier 1 (${userProfile?.primaryBankLabel || 'Canara Bank'})...`, { icon: '🚀' })
 
       // 5. Directly launch Tier 1 with the brand-new unpaid order params!
-      runTier1({ orderId: data.order_id, keyId: data.key_id, amountPaise: data.amount, total: newTotal })
+      runTier1({
+        orderId: data.order_id,
+        keyId: data.key_id,
+        amountPaise: data.amount,
+        total: newTotal,
+        cartItems: reorderPayload,
+        activeProducts: updated
+      })
     } catch (e) {
       toast.dismiss('reorder-create')
       toast.error('Reorder error: ' + e.message)
     }
   }
 
-  const handleCascadeSuccess = async (paymentId, orderId, railName) => {
+  const handleCascadeSuccess = async (paymentId, orderId, railName, liveProducts = null) => {
     setLoading(true)
     toast.loading(`Verifying ${railName} capture...`, { id: 'cascade-verify' })
     try {
@@ -1163,17 +1442,37 @@ export default function CheckoutSection({
         return
       }
 
-      // Check if post-payment inventory collision is enabled
-      if (simulatePostPaymentOos) {
+      // Check if post-payment inventory collision is enabled and consume it
+      const collisionCount = consumePostPaymentCollision()
+      if (collisionCount > 0) {
         toast.dismiss('cascade-verify')
-        await handlePostPaymentCollision(paymentId, orderId, railName)
+        await handlePostPaymentCollision(paymentId, orderId, railName, collisionCount, liveProducts)
         return
       }
 
+      const finalProducts = (liveProducts && liveProducts.length > 0)
+        ? liveProducts
+        : (activeCartProductsRef.current && activeCartProductsRef.current.length > 0)
+          ? activeCartProductsRef.current
+          : getCartProducts(cart)
+
+      const finalPayload = finalProducts.length > 0
+        ? finalProducts.map(p => ({
+            product_id: p.id,
+            title: p.title,
+            merchant: p.merchant || 'Rasor',
+            unit_price: p.price,
+            quantity: p.qty || 1
+          }))
+        : cartItemsPayload
+      const finalTotal = finalProducts.length > 0
+        ? finalProducts.reduce((sum, p) => sum + p.price * (p.qty || 1), 0)
+        : rawTotal
+
       const { data: syncData } = await syncShopify({
-        cart_items: cartItemsPayload,
+        cart_items: finalPayload,
         currency,
-        final_total: rawTotal,
+        final_total: finalTotal,
         order_id: orderId,
         payment_id: paymentId,
         email: effectiveEmail
@@ -1213,7 +1512,7 @@ export default function CheckoutSection({
   }
 
   // ── Mobile WhatsApp / QR Rescue ───────────────────────────
-  const handleTriggerMobileRescue = async (explicitSummary = null, forceRefresh = false) => {
+  const handleTriggerMobileRescue = async (explicitSummary = null, forceRefresh = false, passedProducts = null) => {
     setIsRescueModuleActive(true)
     try {
       localStorage.setItem('rasor_rescue_module_active', 'true')
@@ -1232,6 +1531,26 @@ export default function CheckoutSection({
         cancelPaymentLink(mobileRescueData.plink_id).catch(() => {})
       }
 
+      const activeProducts = (passedProducts && passedProducts.length > 0)
+        ? passedProducts
+        : (activeCartProductsRef.current && activeCartProductsRef.current.length > 0)
+          ? activeCartProductsRef.current
+          : getCartProducts(cart)
+
+      const rescueItems = activeProducts.length > 0
+        ? activeProducts.map(p => ({
+            product_id: p.id,
+            title: p.title,
+            merchant: p.merchant || 'Rasor',
+            unit_price: p.price,
+            quantity: p.qty || 1
+          }))
+        : cartItemsPayload
+
+      const rescueTotal = activeProducts.length > 0
+        ? activeProducts.reduce((sum, p) => sum + p.price * (p.qty || 1), 0)
+        : rawTotal
+
       const cid = cart?.cartId || cart?.shopifyCartId || `cart_plink_${Date.now()}`
 
       // Build failed attempts summary from explicit argument or cascade state
@@ -1245,9 +1564,9 @@ export default function CheckoutSection({
       }
 
       const { data } = await createPaymentLink({
-        cart_items: cartItemsPayload,
+        cart_items: rescueItems,
         currency,
-        final_total: rawTotal,
+        final_total: rescueTotal,
         cart_id: cid,
         customer_phone: userProfile?.phone || '8806549952',
         customer_email: effectiveEmail,
@@ -1825,16 +2144,44 @@ export default function CheckoutSection({
 
             {/* Launch Cascade Button (Starts at Tier 1) */}
             {!pendingRail && (
-              <button 
-                className="btn btn-full" 
-                style={{ background: 'linear-gradient(135deg, #10b981, #6366f1)', color: '#fff', fontWeight: 700 }}
-                onClick={handleStartCascade} 
-                disabled={loading}
-              >
-                {loading ? <span className="spinner" /> : (
-                  <><Zap size={16} /> Start Multi-Rail Cascade {simulatedOosCount > 0 ? `(${simulatedOosCount}x OOS Swap Queued)` : `(${curr}${rawTotal.toFixed(0)})`}</>
-                )}
-              </button>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <button 
+                  className="btn btn-full" 
+                  style={{ background: 'linear-gradient(135deg, #10b981, #6366f1)', color: '#fff', fontWeight: 700 }}
+                  onClick={handleStartCascade} 
+                  disabled={loading}
+                >
+                  {loading ? <span className="spinner" /> : (
+                    <><Zap size={16} /> Start Multi-Rail Cascade {simulatedOosCount > 0 ? `(${simulatedOosCount}x OOS Swap Queued)` : `(${curr}${rawTotal.toFixed(0)})`}</>
+                  )}
+                </button>
+                
+                {/* Instant Simulation Trigger for Post-Payment Collision Testing */}
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-xs btn-full"
+                  style={{
+                    background: 'rgba(239, 68, 68, 0.12)',
+                    border: '1px dashed rgba(239, 68, 68, 0.45)',
+                    color: '#fca5a5',
+                    padding: '5px 8px',
+                    fontSize: '0.72rem',
+                    fontWeight: 600,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 5
+                  }}
+                  onClick={() => {
+                    const simPayId = `pay_sim_post_${Date.now().toString(36)}`
+                    const simOrdId = activeOrderId || `order_sim_${Date.now().toString(36)}`
+                    handlePostPaymentCollision(simPayId, simOrdId, 'Simulated Capture Rail', simulatedPostPaymentCount || 1, activeCartProductsRef.current)
+                  }}
+                >
+                  <ShieldAlert size={12} color="#f87171" />
+                  ⚡ Test Post-Payment Collision ({simulatedPostPaymentCount > 0 ? simulatedPostPaymentCount : 1}x Refund Recovery)
+                </button>
+              </div>
             )}
 
             {/* Or Mobile Handset Rescue Button (Always Visible) */}
@@ -2140,7 +2487,7 @@ export default function CheckoutSection({
 
             {/* Explanation */}
             <p style={{ fontSize: '0.8rem', color: '#cbd5e1', lineHeight: 1.5, margin: '0 0 14px 0' }}>
-              Payment of <strong>{curr}{postPaymentModal.amount?.toFixed(0)}</strong> was captured on <em>{postPaymentModal.railName}</em>. However, before the merchant fulfillment lock was placed, <strong>"{postPaymentModal.outOfStockTitle}"</strong> was claimed by another customer.
+              Payment of <strong>{curr}{postPaymentModal.amount?.toFixed(0)}</strong> was captured on <em>{postPaymentModal.railName}</em>. However, before the merchant fulfillment lock was placed, <strong>"{postPaymentModal.outOfStockTitle}"</strong> {postPaymentModal.numColliding > 1 ? 'were' : 'was'} claimed by another customer.
             </p>
 
             {/* Autonomous AP2 SafeGuard Receipt */}
@@ -2153,7 +2500,9 @@ export default function CheckoutSection({
                 <span style={{ fontSize: '0.78rem', fontWeight: 700, color: '#6ee7b7', display: 'flex', alignItems: 'center', gap: 6 }}>
                   <CheckCircle2 size={16} /> Autonomous AP2 Instant Refund Executed
                 </span>
-                <span className="badge badge-green" style={{ fontSize: '0.66rem' }}>100% Zero-Loss</span>
+                <span className="badge badge-green" style={{ fontSize: '0.66rem' }}>
+                  {postPaymentModal.amount >= (postPaymentModal.total || rawTotal) ? '100% Zero-Loss' : `Partial Refund (${curr}${postPaymentModal.amount?.toFixed(0)})`}
+                </span>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: '0.74rem', color: '#e2e8f0' }}>
                 <div><strong>Refund ID:</strong> <code style={{ color: '#a5b4fc', background: 'rgba(255,255,255,0.06)', padding: '1px 5px', borderRadius: 3 }}>{postPaymentModal.refundId}</code></div>
